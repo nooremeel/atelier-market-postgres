@@ -9,3 +9,4 @@ access.log
 data/invoices/*.pdf
 !data/invoices/.gitkeep
 POSTGRES_MIGRATION.md
+docs/POSTGRES_MIGRATION.md
