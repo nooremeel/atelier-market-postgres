@@ -174,3 +174,11 @@ It must NOT contain raw DB queries, external API calls, or complex calculations.
 - **DO NOT add, stage, commit, or push `POSTGRES_MIGRATION.md` in this repository.**
   This specification file belongs strictly to the upcoming `atelier-market-postgres` repository (where it will live as `docs/POSTGRES_MIGRATION.md`) and must never be tracked or committed to the MongoDB edition repository.
 - **Future Task (Post-Migration):** Once the PostgreSQL edition is fully deployed, update `README.md` in this repository with a prominent cross-link to the PostgreSQL edition live demo and repository, and align inventory/search descriptions.
+
+---
+
+## 10. Local Environment Services (Docker & PostgreSQL)
+
+- **Do NOT attempt to auto-start Docker Desktop or PostgreSQL services via background scripts or commands.**
+- Docker and PostgreSQL services are intentionally configured not to start on Windows startup. Whenever Docker or PostgreSQL is needed and not running, **ask the user directly to start them manually**.
+
