@@ -1,5 +1,5 @@
 const authService = require('../../services/authService');
-const User = require('../../models/user');
+const { User } = require('../../db/models');
 const bcrypt = require('bcryptjs');
 
 describe('authService', () => {
@@ -67,12 +67,12 @@ describe('authService', () => {
     it('recovers drifted admin password in DEMO_MODE', async () => {
       process.env.DEMO_MODE = 'true';
       const wrongHash = await bcrypt.hash('OldAdminPass!', 10);
-      const admin = await new User({
+      const admin = await User.create({
         email: 'admin@ateliermarket.com',
         name: 'Admin',
         password: wrongHash,
         role: 'customer',
-      }).save();
+      });
 
       const result = await authService.verifyPassword(admin, 'Demo1234!');
       expect(result).toBe(true);
@@ -159,7 +159,7 @@ describe('authService', () => {
     it('returns null for expired or invalid reset token', async () => {
       const user = await authService.createUser({ email: 'expired@domain.com', password: 'Pass123!' });
       user.resetToken = 'expiredtoken123';
-      user.resetTokenExpire = Date.now() - 1000;
+      user.resetTokenExpire = new Date(Date.now() - 1000);
       await user.save();
 
       const validated = await authService.validateResetToken('expiredtoken123');

@@ -14,35 +14,27 @@ const crypto = require('crypto');
 
 const errorController = require('./controllers/errorController');
 
-const User = require('./models/user');
-
-const mongoose = require('mongoose');
 const session = require('express-session');
-const mongodbStore = require('connect-mongodb-session')(session);
-
-
+const pgSession = require('connect-pg-simple')(session);
+const { sequelize } = require('./db');
+const { User, SellerProfile } = require('./db/models');
 
 const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST);
 
-const MONGODB_URI = process.env.MONGODB_URI || (
-    process.env.MONGO_USER && process.env.MONGO_PASSWORD && process.env.MONGO_DEFAULT_DATABASE
-        ? `mongodb+srv://${process.env.MONGO_USER}:${process.env.MONGO_PASSWORD}@cluster0.etoo1jt.mongodb.net/${process.env.MONGO_DEFAULT_DATABASE}?appName=shop`
-        : ''
-);
-
 const app = express();
-const connectToDatabase = require('./util/db');
 
 // Trust reverse proxy (Vercel, Nginx, etc.) for secure cookie detection and client IP
 app.set('trust proxy', 1);
 
-// Serverless DB connection middleware ensuring DB is ready before request processing
+// DB connection check middleware ensuring DB is ready before request processing
+let dbConnected = false;
 app.use(async (req, res, next) => {
-    if (isTest || mongoose.connection.readyState >= 1) {
+    if (isTest || dbConnected) {
         return next();
     }
     try {
-        await connectToDatabase();
+        await sequelize.authenticate();
+        dbConnected = true;
         next();
     } catch (err) {
         console.error('[DB Connection Middleware Error]:', err);
@@ -56,10 +48,11 @@ app.use(async (req, res, next) => {
 // Network-backed session store in production / outside tests;
 // Express-session falls back to MemoryStore during tests
 let store;
-if (!isTest && MONGODB_URI) {
-    store = new mongodbStore({
-        uri: MONGODB_URI,
-        collection: 'sessions'
+if (!isTest) {
+    store = new pgSession({
+        conString: process.env.DATABASE_URL || 'postgres://atelier:atelier@localhost:5432/atelier',
+        tableName: 'session',
+        createTableIfMissing: false,
     });
     store.on('error', (err) => {
         console.error('[Session Store Error]:', err);
@@ -126,24 +119,22 @@ app.use(session({
 }));
 
 
-app.use((req, res, next) => {
-    if (!req.session.user) {
+app.use(async (req, res, next) => {
+    if (!req.session?.user?._id) {
         return next();
     }
-    User.findById(req.session.user._id)
-        .then(user => {
-
-            if (!user) {
-                return next();
-            }
-
-            req.user = user;
-            next();
-        })
-        .catch(err => {
-            next(new Error(err));
+    try {
+        const user = await User.findByPk(req.session.user._id, {
+            include: [{ model: SellerProfile, as: 'sellerProfile' }],
         });
-
+        if (!user) {
+            return next();
+        }
+        req.user = user;
+        next();
+    } catch (err) {
+        next(err);
+    }
 });
 // CSRF Protection: Exempt payment webhooks and browser callbacks
 app.use((req, res, next) => {
@@ -179,9 +170,9 @@ app.use((error, req, res, next) => {
 });
 
 if (require.main === module) {
-    connectToDatabase()
+    sequelize.authenticate()
         .then(() => {
-            const port = process.env.PORT || 3000;
+            const port = process.env.PORT || 3001;
             app.listen(port, () => console.log(`Server listening on port ${port}`));
         })
         .catch(err => console.error('[Bootstrap Error]:', err));

@@ -3,6 +3,10 @@
 const { Model, DataTypes } = require('sequelize');
 
 class User extends Model {
+  static findById(id, options) {
+    return this.findByPk(id, options);
+  }
+
   toJSON() {
     const values = { ...this.get() };
     values._id = values.id;
@@ -13,6 +17,12 @@ class User extends Model {
         country: this.addressCountry || '',
         postalCode: this.addressPostal || '',
       };
+    }
+    if (values.sellerProfile === undefined && this.sellerProfile !== undefined) {
+      values.sellerProfile = this.sellerProfile ? (this.sellerProfile.toJSON ? this.sellerProfile.toJSON() : this.sellerProfile) : null;
+    }
+    if (values.favourites === undefined) {
+      values.favourites = this.favouriteProducts ? this.favouriteProducts.map((p) => p.id || p._id) : [];
     }
     return values;
   }

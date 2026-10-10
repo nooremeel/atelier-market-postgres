@@ -1,6 +1,6 @@
 const request = require('supertest');
 const app = require('../../app');
-const User = require('../../models/user');
+const { User } = require('../../db/models');
 
 function agent() { return request.agent(app); }
 async function csrfFor(a) { return (await a.get('/api/csrf-token')).body.csrfToken; }
@@ -114,7 +114,7 @@ describe('auth API', () => {
       .send({ email: 'admin@ateliermarket.com', password: 'Demo1234!' });
     expect(res.status).toBe(422);
 
-    const user = await User.findOne({ email: 'admin@ateliermarket.com' });
+    const user = await User.findOne({ where: { email: 'admin@ateliermarket.com' } });
     expect(user).toBeNull();
   });
 
@@ -130,7 +130,7 @@ describe('auth API', () => {
       expect(res.body.user.email).toBe('admin@ateliermarket.com');
       expect(res.body.user.role).toBe('admin');
 
-      const user = await User.findOne({ email: 'admin@ateliermarket.com' });
+      const user = await User.findOne({ where: { email: 'admin@ateliermarket.com' } });
       expect(user).not.toBeNull();
       expect(user.role).toBe('admin');
     } finally {

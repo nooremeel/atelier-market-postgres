@@ -3,7 +3,7 @@ const { check, body } = require('express-validator');
 const rateLimit = require('express-rate-limit');
 
 const authController = require('../controllers/auth');
-const User = require('../models/user');
+const { User } = require('../db/models');
 const router = express.Router();
 
 const isTest = process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST);
@@ -40,7 +40,7 @@ router.post('/signup', authLimiter, [
         .bail()
         .normalizeEmail()
         .custom((value, { req }) => {
-            return User.findOne({ email: value })
+            return User.findOne({ where: { email: value.toLowerCase().trim() } })
                 .then(userDoc => {
                     if (userDoc) {
                         return Promise.reject('Email already exists');
@@ -79,7 +79,7 @@ router.post(
     '/change-password',
     authLimiter,
     [
-        body('userId').isMongoId().withMessage('Invalid request'),
+        body('userId').isUUID().withMessage('Invalid request'),
         body('passwordToken').isString().matches(/^[a-f0-9]{64}$/).withMessage('Invalid or malformed reset token'),
         body('password').isStrongPassword().withMessage('Password must be at least 8 characters with an uppercase letter, a lowercase letter, a number, and a symbol'),
     ],

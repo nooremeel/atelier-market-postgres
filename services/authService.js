@@ -4,12 +4,14 @@
  *              password verification, user creation, and password reset lifecycle.
  *              All DB queries and bcrypt operations live here; the controller
  *              is responsible only for session management and HTTP responses.
+ *              Uses PostgreSQL / Sequelize models.
  */
 
 const crypto = require('crypto');
 const { promisify } = require('util');
 const bcrypt = require('bcryptjs');
-const User = require('../models/user');
+const { Op } = require('sequelize');
+const { User, SellerProfile } = require('../db/models');
 
 const randomBytesAsync = promisify(crypto.randomBytes);
 
@@ -20,10 +22,14 @@ const randomBytesAsync = promisify(crypto.randomBytes);
 /**
  * Look up a user by email.
  * @param {string} email
- * @returns {Promise<import('../models/user').UserDocument|null>}
+ * @returns {Promise<import('../db/models/User')|null>}
  */
 async function findUserByEmail(email) {
-  return User.findOne({ email });
+  if (!email || typeof email !== 'string') return null;
+  return User.findOne({
+    where: { email: email.toLowerCase().trim() },
+    include: [{ model: SellerProfile, as: 'sellerProfile' }],
+  });
 }
 
 /**
@@ -33,12 +39,13 @@ async function findUserByEmail(email) {
  *
  * @param {string} email
  * @param {string} password - The raw password supplied by the login request.
- * @returns {Promise<import('../models/user').UserDocument|null>} The newly
+ * @returns {Promise<import('../db/models/User')|null>} The newly
  *   created user document, or null if conditions are not met.
  */
 async function bootstrapDemoUser(email, password) {
   if (process.env.DEMO_MODE !== 'true' || password !== 'Demo1234!') return null;
 
+  const normalizedEmail = (email || '').toLowerCase().trim();
   const hash = await bcrypt.hash('Demo1234!', 10);
 
   const demoProfiles = {
@@ -47,7 +54,6 @@ async function bootstrapDemoUser(email, password) {
       email: 'admin@ateliermarket.com',
       role: 'admin',
       password: hash,
-      cart: { items: [] },
     },
     'layla@ateliermarket.com': {
       name: 'Layla Al-Rashidi',
@@ -58,23 +64,32 @@ async function bootstrapDemoUser(email, password) {
         shopName: 'Al-Rashidi Ceramics',
         shopDescription:
           'Third-generation ceramicist from the Gulf. Wheel-thrown stoneware and mineral glazes.',
-        location: { city: 'Manama', country: 'Bahrain', lat: 26.2235, lng: 50.5876 },
+        city: 'Manama',
+        country: 'Bahrain',
+        lat: 26.2235,
+        lng: 50.5876,
       },
-      cart: { items: [] },
     },
     'sara@example.com': {
       name: 'Sara Hassan',
       email: 'sara@example.com',
       role: 'customer',
       password: hash,
-      cart: { items: [] },
     },
   };
 
-  const profile = demoProfiles[email];
+  const profile = demoProfiles[normalizedEmail];
   if (!profile) return null;
 
-  return new User(profile).save();
+  if (profile.sellerProfile) {
+    return User.create(profile, {
+      include: [{ model: SellerProfile, as: 'sellerProfile' }],
+    });
+  }
+
+  const user = await User.create(profile);
+  user.sellerProfile = null;
+  return user;
 }
 
 /**
@@ -82,7 +97,7 @@ async function bootstrapDemoUser(email, password) {
  * In DEMO_MODE, if the admin password has drifted (e.g. after a DB restore),
  * it is silently re-synced to the demo credential.
  *
- * @param {import('../models/user').UserDocument} user
+ * @param {import('../db/models/User')} user
  * @param {string} password - Raw password from the login request.
  * @returns {Promise<boolean>} True if authentication should be granted.
  */
@@ -111,7 +126,7 @@ async function verifyPassword(user, password) {
  *
  * @param {string} email
  * @param {string} password - Raw password from login request.
- * @returns {Promise<import('../models/user').UserDocument|null>}
+ * @returns {Promise<import('../db/models/User')|null>}
  */
 async function findOrBootstrapDemoUser(email, password) {
   let user = await findUserByEmail(email);
@@ -127,7 +142,7 @@ async function findOrBootstrapDemoUser(email, password) {
  *
  * @param {string} email
  * @param {string} password
- * @returns {Promise<import('../models/user').UserDocument|null>} Returns the user on success, null on failure.
+ * @returns {Promise<import('../db/models/User')|null>} Returns the user on success, null on failure.
  */
 async function authenticateUser(email, password) {
   const user = await findOrBootstrapDemoUser(email, password);
@@ -151,7 +166,7 @@ async function authenticateUser(email, password) {
  * @param {string} params.password - Raw password; hashed here before storage.
  * @param {string} [params.name]
  * @param {'customer'|'seller'} [params.role]
- * @returns {Promise<import('../models/user').UserDocument>}
+ * @returns {Promise<import('../db/models/User')>}
  */
 async function createUser({ email, password, name, role }) {
   const assignedRole = role === 'seller' ? 'seller' : 'customer';
@@ -161,26 +176,34 @@ async function createUser({ email, password, name, role }) {
       .split('@')[0]
       .replace(/[._-]/g, ' ')
       .replace(/\b\w/g, (c) => c.toUpperCase());
-  const sellerProfile =
-    assignedRole === 'seller'
-      ? {
-          shopName: '',
-          shopDescription: '',
-          shopBanner: '',
-          location: { city: '', country: '', lat: null, lng: null },
-          joinedAt: new Date(),
-        }
-      : null;
-
   const hashed = await bcrypt.hash(password, 12);
-  return new User({
+
+  const userData = {
     name: displayName,
-    email,
+    email: email.toLowerCase().trim(),
     password: hashed,
     role: assignedRole,
-    sellerProfile,
-    cart: { items: [] },
-  }).save();
+  };
+
+  if (assignedRole === 'seller') {
+    userData.sellerProfile = {
+      shopName: '',
+      shopDescription: '',
+      shopBanner: '',
+      city: '',
+      country: '',
+      lat: null,
+      lng: null,
+      joinedAt: new Date(),
+    };
+    return User.create(userData, {
+      include: [{ model: SellerProfile, as: 'sellerProfile' }],
+    });
+  }
+
+  const user = await User.create(userData);
+  user.sellerProfile = null;
+  return user;
 }
 
 // ---------------------------------------------------------------------------
@@ -196,13 +219,14 @@ async function createUser({ email, password, name, role }) {
  * @returns {Promise<void>}
  */
 async function initiatePasswordReset(email) {
+  if (!email || typeof email !== 'string') return;
   const buffer = await randomBytesAsync(32);
   const token = buffer.toString('hex');
 
-  const user = await User.findOne({ email });
+  const user = await User.findOne({ where: { email: email.toLowerCase().trim() } });
   if (user) {
     user.resetToken = token;
-    user.resetTokenExpire = Date.now() + 3_600_000; // 1 hour
+    user.resetTokenExpire = new Date(Date.now() + 3_600_000); // 1 hour
     await user.save();
   }
 }
@@ -214,12 +238,15 @@ async function initiatePasswordReset(email) {
  * @returns {Promise<{ email: string, userId: string }|null>}
  */
 async function validateResetToken(token) {
+  if (!token || typeof token !== 'string') return null;
   const user = await User.findOne({
-    resetToken: token,
-    resetTokenExpire: { $gt: Date.now() },
+    where: {
+      resetToken: token,
+      resetTokenExpire: { [Op.gt]: new Date() },
+    },
   });
   if (!user) return null;
-  return { email: user.email, userId: user._id.toString() };
+  return { email: user.email, userId: user.id || user._id };
 }
 
 /**
@@ -232,16 +259,19 @@ async function validateResetToken(token) {
  * @returns {Promise<boolean>} False if the token is invalid or expired.
  */
 async function changePassword(userId, passwordToken, newPassword) {
+  if (!userId || !passwordToken || !newPassword) return false;
   const user = await User.findOne({
-    resetToken: passwordToken,
-    resetTokenExpire: { $gt: Date.now() },
-    _id: userId,
+    where: {
+      id: userId,
+      resetToken: passwordToken,
+      resetTokenExpire: { [Op.gt]: new Date() },
+    },
   });
   if (!user) return false;
 
   user.password = await bcrypt.hash(newPassword, 12);
   user.resetToken = null;
-  user.resetTokenExpire = undefined;
+  user.resetTokenExpire = null;
   await user.save();
   return true;
 }
