@@ -6,7 +6,13 @@ const cartController = require('../controllers/cart');
 const ordersController = require('../controllers/orders');
 const isCustomerOrAdmin = require('../middleware/require-role')('customer', 'admin');
 
-const validateProductId = [body('productId').isMongoId().withMessage('Invalid product')];
+const validateProductId = [
+  body('productId')
+    .isString()
+    .trim()
+    .notEmpty()
+    .withMessage('Invalid product'),
+];
 
 // Product catalog routes
 router.get('/products', productsController.getProducts);

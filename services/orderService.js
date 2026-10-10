@@ -19,6 +19,10 @@ const paymobService = require('./paymobService');
 async function reconcilePendingPaymobOrders(userId) {
   if (!userId) return;
   try {
+    const mongoose = require('mongoose');
+    if (typeof userId === 'string' && !mongoose.Types.ObjectId.isValid(userId)) {
+      return;
+    }
     const pendingOrders = await Order.find({
       'user.userId': userId,
       paymentMethod: 'card',

@@ -1,9 +1,7 @@
 const request = require('supertest');
 const app = require('../../app');
-const Product = require('../../models/product');
-const User = require('../../models/user');
+const { Product, User, Favourite } = require('../../db/models');
 const bcrypt = require('bcryptjs');
-const mongoose = require('mongoose');
 
 async function login(agent, email = 'favtest@example.com') {
   const password = 'Passw0rd!x';
@@ -12,7 +10,6 @@ async function login(agent, email = 'favtest@example.com') {
     email,
     password: await bcrypt.hash(password, 4),
     role: 'customer',
-    favourites: [],
   });
   const { body } = await agent.get('/api/csrf-token');
   await agent.post('/api/auth/login').set('csrf-token', body.csrfToken).send({ email, password });
@@ -21,14 +18,22 @@ async function login(agent, email = 'favtest@example.com') {
 
 describe('Favourites API', () => {
   let product;
+  let seller;
 
   beforeEach(async () => {
+    seller = await User.create({
+      name: 'Glass Artisan',
+      email: `glass-seller-${Date.now()}-${Math.random()}@example.com`,
+      password: 'Passw0rd!x',
+      role: 'seller',
+    });
     product = await Product.create({
       title: 'Damascus Window Lantern',
       price: 220,
       description: 'Geometric star-pattern lantern in hand-blown cobalt glass.',
-      imageUrl: 'images/2026-06-08T13-17-03.986Z-Juice.jpg',
-      userId: new mongoose.Types.ObjectId(),
+      imageUrl: 'images/lantern.jpg',
+      sellerId: seller.id,
+      category: 'glass',
     });
   });
 
@@ -39,24 +44,23 @@ describe('Favourites API', () => {
 
     // Simulate 2 rapid concurrent clicks
     await Promise.all([
-      agent.post('/api/favourites').set('csrf-token', csrf).send({ productId: product._id.toString() }),
-      agent.post('/api/favourites').set('csrf-token', csrf).send({ productId: product._id.toString() }),
+      agent.post('/api/favourites').set('csrf-token', csrf).send({ productId: product.id.toString() }),
+      agent.post('/api/favourites').set('csrf-token', csrf).send({ productId: product.id.toString() }),
     ]);
 
     // Check database directly
-    const updatedUser = await User.findById(user._id);
-    const matchingIds = updatedUser.favourites.filter(
-      (id) => id.toString() === product._id.toString()
-    );
+    const matchingFavs = await Favourite.findAll({
+      where: { userId: user.id, productId: product.id },
+    });
 
-    // Can never have more than 1 occurrence
-    expect(matchingIds.length).toBeLessThanOrEqual(1);
+    // Can never have more than 1 occurrence due to composite primary key
+    expect(matchingFavs.length).toBeLessThanOrEqual(1);
 
     // Verify GET /api/favourites has no duplicates
     const getRes = await agent.get('/api/favourites');
     expect(getRes.status).toBe(200);
     const getMatching = getRes.body.favourites.filter(
-      (p) => p._id.toString() === product._id.toString()
+      (p) => (p._id || p.id).toString() === product.id.toString()
     );
     expect(getMatching.length).toBeLessThanOrEqual(1);
   });
@@ -67,14 +71,14 @@ describe('Favourites API', () => {
     const csrf = (await agent.get('/api/csrf-token')).body.csrfToken;
 
     // Add
-    let res = await agent.post('/api/favourites').set('csrf-token', csrf).send({ productId: product._id.toString() });
+    let res = await agent.post('/api/favourites').set('csrf-token', csrf).send({ productId: product.id.toString() });
     expect(res.body.favourited).toBe(true);
 
     let getRes = await agent.get('/api/favourites');
     expect(getRes.body.favourites).toHaveLength(1);
 
     // Remove
-    res = await agent.post('/api/favourites').set('csrf-token', csrf).send({ productId: product._id.toString() });
+    res = await agent.post('/api/favourites').set('csrf-token', csrf).send({ productId: product.id.toString() });
     expect(res.body.favourited).toBe(false);
 
     getRes = await agent.get('/api/favourites');

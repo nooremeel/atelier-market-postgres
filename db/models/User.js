@@ -7,6 +7,45 @@ class User extends Model {
     return this.findByPk(id, options);
   }
 
+  async populate(field) {
+    if (field === 'favourites') {
+      const { Favourite, Product } = require('./index');
+      const favs = await Favourite.findAll({
+        where: { userId: this.id },
+        include: [{ model: Product, as: 'product' }],
+      });
+      this.favouriteProducts = favs.map((f) => f.product).filter(Boolean);
+      return this;
+    }
+    return this;
+  }
+
+  async toggleFavourite(productId) {
+    const { Favourite } = require('./index');
+    const pId = productId._id || productId.id || productId;
+    const existing = await Favourite.findOne({
+      where: { userId: this.id, productId: pId },
+    });
+    if (existing) {
+      await existing.destroy();
+      return false;
+    }
+    try {
+      await Favourite.create({ userId: this.id, productId: pId });
+      return true;
+    } catch (err) {
+      return true;
+    }
+  }
+
+  isFavourite(productId) {
+    const pId = (productId._id || productId.id || productId).toString();
+    if (this.favouriteProducts) {
+      return this.favouriteProducts.some((p) => (p.id || p._id).toString() === pId);
+    }
+    return false;
+  }
+
   toJSON() {
     const values = { ...this.get() };
     values._id = values.id;
@@ -21,8 +60,15 @@ class User extends Model {
     if (values.sellerProfile === undefined && this.sellerProfile !== undefined) {
       values.sellerProfile = this.sellerProfile ? (this.sellerProfile.toJSON ? this.sellerProfile.toJSON() : this.sellerProfile) : null;
     }
-    if (values.favourites === undefined) {
-      values.favourites = this.favouriteProducts ? this.favouriteProducts.map((p) => p.id || p._id) : [];
+    if (this.favouriteProducts) {
+      values.favourites = this.favouriteProducts.map((p) => (p.id || p._id).toString());
+    } else if (values.favourites === undefined) {
+      values.favourites = [];
+    }
+    if (this.addresses && Array.isArray(this.addresses)) {
+      values.addresses = this.addresses.map((a) => (a.toJSON ? a.toJSON() : a));
+    } else if (values.addresses === undefined) {
+      values.addresses = [];
     }
     return values;
   }
@@ -138,6 +184,13 @@ module.exports = (sequelize) => {
             if (val.postalCode !== undefined) this.addressPostal = val.postalCode;
           }
         },
+      },
+      cart: {
+        type: DataTypes.VIRTUAL,
+        get() {
+          return { items: [] };
+        },
+        set() {},
       },
     },
     {

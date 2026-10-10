@@ -1,55 +1,52 @@
 /**
  * @file services/cartService.js
  * @description Domain logic for customer shopping cart: serialization, variant handling,
- *              inventory scarcity checks, and line item mutations.
+ *              inventory scarcity checks, and line item mutations using PostgreSQL cart_items.
  */
 
-const Product = require('../models/product');
+const { CartItem, Product, ProductVariant } = require('../db/models');
 
 /**
- * Serializes a user's populated cart with unit pricing, variant information, and inventory limits.
+ * Serializes a list of CartItem records with unit pricing, variant information, and inventory limits.
  *
- * @param {import('../models/user').UserDocument} user - User document with populated cart.items.productId.
+ * @param {Array<CartItem>} cartItems - Array of CartItem instances with included Product and ProductVariant.
  * @returns {{ items: Array, totalItems: number, totalPrice: number }}
  */
-function serializeCart(user) {
-  if (!user || !user.cart || !Array.isArray(user.cart.items)) {
+function serializeCart(cartItems = []) {
+  if (!Array.isArray(cartItems)) {
     return { items: [], totalItems: 0, totalPrice: 0 };
   }
 
-  const items = user.cart.items
-    .filter((i) => i.productId)
+  const items = cartItems
+    .filter((i) => i.product)
     .map((i) => {
-      const prod = i.productId;
-      const variantIdStr = i.variantId ? i.variantId.toString() : null;
+      const prod = i.product.toJSON ? i.product.toJSON() : i.product;
+      const variantIdStr = i.variantId ? String(i.variantId) : null;
       let variant = null;
-      let unitPrice = prod.price;
-      let availableStock = prod.stock !== undefined ? prod.stock : 20;
+      let unitPrice = Number(prod.price);
+      let availableStock = prod.stock !== undefined ? Number(prod.stock) : 20;
 
-      if (variantIdStr && Array.isArray(prod.variants)) {
-        const found = prod.variants.find((v) => v._id.toString() === variantIdStr);
-        if (found) {
-          variant = {
-            _id: found._id,
-            name: found.name,
-            sku: found.sku,
-            price: found.price,
-            compareAtPrice: found.compareAtPrice,
-            stock: found.stock,
-          };
-          if (typeof found.price === 'number') {
-            unitPrice = found.price;
-          }
-          if (typeof found.stock === 'number') {
-            availableStock = found.stock;
-          }
-        }
+      if (i.variant) {
+        const v = i.variant.toJSON ? i.variant.toJSON() : i.variant;
+        variant = {
+          _id: v.id || v._id,
+          id: v.id || v._id,
+          name: v.name,
+          sku: v.sku,
+          price: Number(v.price),
+          compareAtPrice: v.compareAtPrice !== null && v.compareAtPrice !== undefined ? Number(v.compareAtPrice) : null,
+          stock: Number(v.stock),
+        };
+        unitPrice = Number(v.price);
+        availableStock = Number(v.stock);
       }
 
       return {
-        _id: i._id,
+        _id: i.id || i._id,
+        id: i.id || i._id,
         product: prod,
-        quantity: i.quantity,
+        productId: prod.id || prod._id,
+        quantity: Number(i.quantity),
         variantId: variantIdStr,
         variant,
         unitPrice,
@@ -59,7 +56,7 @@ function serializeCart(user) {
 
   const totalItems = items.reduce((s, i) => s + i.quantity, 0);
   const totalPrice = items.reduce(
-    (s, i) => s + i.quantity * (i.unitPrice !== undefined ? i.unitPrice : i.product.price),
+    (s, i) => s + i.quantity * (i.unitPrice !== undefined ? i.unitPrice : Number(i.product.price)),
     0
   );
 
@@ -67,20 +64,28 @@ function serializeCart(user) {
 }
 
 /**
- * Retrieves the current user's cart populated with product references.
+ * Retrieves the current user's cart populated with product and variant references.
  *
- * @param {import('../models/user').UserDocument} user
+ * @param {object} user
  * @returns {Promise<{ items: Array, totalItems: number, totalPrice: number }>}
  */
 async function getCart(user) {
-  const populatedUser = await user.populate('cart.items.productId');
-  return serializeCart(populatedUser);
+  const userId = user.id || user._id;
+  const cartItems = await CartItem.findAll({
+    where: { userId },
+    include: [
+      { model: Product, as: 'product' },
+      { model: ProductVariant, as: 'variant' },
+    ],
+    order: [['id', 'ASC']],
+  });
+  return serializeCart(cartItems);
 }
 
 /**
  * Adds an item (and optional variant) to the user's cart, verifying stock limits.
  *
- * @param {import('../models/user').UserDocument} user
+ * @param {object} user
  * @param {object} params
  * @param {string} params.productId
  * @param {string} [params.variantId]
@@ -88,7 +93,10 @@ async function getCart(user) {
  * @returns {Promise<{ items: Array, totalItems: number, totalPrice: number }>}
  */
 async function addToCart(user, { productId, variantId, quantity }) {
-  const product = await Product.findById(productId);
+  const userId = user.id || user._id;
+  const product = await Product.findByPk(productId, {
+    include: [{ model: ProductVariant, as: 'variants' }],
+  });
   if (!product) {
     const error = new Error('Product not found');
     error.status = 404;
@@ -97,18 +105,23 @@ async function addToCart(user, { productId, variantId, quantity }) {
 
   const addQty = typeof quantity === 'number' && quantity > 0 ? quantity : 1;
   let selectedVariant = null;
-  let availableStock = product.stock !== undefined ? product.stock : 20;
+  let availableStock = product.stock !== undefined ? Number(product.stock) : 20;
 
   const variantIdStr = variantId ? String(variantId) : null;
-  if (variantIdStr && Array.isArray(product.variants)) {
-    selectedVariant = product.variants.find((v) => v._id.toString() === variantIdStr);
+  if (variantIdStr) {
+    selectedVariant = (product.variants || []).find(
+      (v) => (v.id || v._id).toString() === variantIdStr
+    );
+    if (!selectedVariant) {
+      selectedVariant = await ProductVariant.findByPk(variantIdStr);
+    }
     if (!selectedVariant) {
       const error = new Error('Selected variant not found');
       error.status = 400;
       throw error;
     }
     if (typeof selectedVariant.stock === 'number') {
-      availableStock = selectedVariant.stock;
+      availableStock = Number(selectedVariant.stock);
     }
   }
 
@@ -118,76 +131,113 @@ async function addToCart(user, { productId, variantId, quantity }) {
     throw error;
   }
 
-  const existing = user.cart.items.find((i) => {
-    const matchProd = i.productId.toString() === product._id.toString();
-    const matchVar = (i.variantId ? i.variantId.toString() : null) === variantIdStr;
-    return matchProd && matchVar;
+  const existing = await CartItem.findOne({
+    where: {
+      userId,
+      productId: product.id,
+      variantId: variantIdStr || null,
+    },
   });
 
-  const currentQty = existing ? existing.quantity : 0;
+  const currentQty = existing ? Number(existing.quantity) : 0;
   if (currentQty + addQty > availableStock) {
     const error = new Error(`Only ${availableStock} pieces available in studio`);
     error.status = 400;
     throw error;
   }
 
-  await user.addToCart(product, variantIdStr, addQty);
-  const populatedUser = await user.populate('cart.items.productId');
-  return serializeCart(populatedUser);
+  if (existing) {
+    existing.quantity = currentQty + addQty;
+    await existing.save();
+  } else {
+    await CartItem.create({
+      userId,
+      productId: product.id,
+      variantId: variantIdStr || null,
+      quantity: addQty,
+    });
+  }
+
+  return getCart(user);
 }
 
 /**
  * Removes a product line item entirely from the user's cart.
  *
- * @param {import('../models/user').UserDocument} user
+ * @param {object} user
  * @param {object} params
  * @param {string} params.productId
  * @param {string} [params.variantId]
  * @returns {Promise<{ items: Array, totalItems: number, totalPrice: number }>}
  */
 async function removeFromCart(user, { productId, variantId }) {
-  await user.removeFromCart(productId, variantId || null);
-  const populatedUser = await user.populate('cart.items.productId');
-  return serializeCart(populatedUser);
+  const userId = user.id || user._id;
+  const pId = productId?._id || productId?.id || productId;
+  const vId = variantId ? String(variantId) : null;
+
+  const whereClause = {
+    userId,
+    productId: pId,
+  };
+  if (vId) {
+    whereClause.variantId = vId;
+  } else {
+    whereClause.variantId = null;
+  }
+
+  await CartItem.destroy({ where: whereClause });
+  return getCart(user);
 }
 
 /**
  * Decrements an item's quantity in the cart or removes it if quantity reaches 0.
  *
- * @param {import('../models/user').UserDocument} user
+ * @param {object} user
  * @param {object} params
  * @param {string} params.productId
  * @param {string} [params.variantId]
  * @returns {Promise<{ items: Array, totalItems: number, totalPrice: number }>}
  */
 async function decrementCartItem(user, { productId, variantId }) {
-  const id = String(productId);
-  const variantIdStr = variantId ? String(variantId) : null;
+  const userId = user.id || user._id;
+  const pId = productId?._id || productId?.id || productId;
+  const vId = variantId ? String(variantId) : null;
 
-  const line = user.cart.items.find((i) => {
-    const matchProd = String(i.productId) === id;
-    const matchVar = (i.variantId ? String(i.variantId) : null) === variantIdStr;
-    return matchProd && matchVar;
-  });
-
-  if (!line) {
-    const populatedUser = await user.populate('cart.items.productId');
-    return serializeCart(populatedUser);
-  }
-
-  if (line.quantity <= 1) {
-    user.cart.items = user.cart.items.filter((i) => {
-      const matchProd = String(i.productId) === id;
-      const matchVar = (i.variantId ? String(i.variantId) : null) === variantIdStr;
-      return !(matchProd && matchVar);
-    });
+  const whereClause = {
+    userId,
+    productId: pId,
+  };
+  if (vId) {
+    whereClause.variantId = vId;
   } else {
-    line.quantity -= 1;
+    whereClause.variantId = null;
   }
 
-  await user.save();
-  const populatedUser = await user.populate('cart.items.productId');
-  return serializeCart(populatedUser);
+  const existing = await CartItem.findOne({ where: whereClause });
+  if (!existing) {
+    return getCart(user);
+  }
+
+  if (existing.quantity > 1) {
+    existing.quantity -= 1;
+    await existing.save();
+  } else {
+    await existing.destroy();
+  }
+
+  return getCart(user);
+}
+
+/**
+ * Clears all items from the user's cart.
+ *
+ * @param {object} user
+ * @returns {Promise<{ items: Array, totalItems: number, totalPrice: number }>}
+ */
+async function clearCart(user) {
+  const userId = user.id || user._id;
+  await CartItem.destroy({ where: { userId } });
+  return { items: [], totalItems: 0, totalPrice: 0 };
 }
 
 module.exports = {
@@ -196,4 +246,5 @@ module.exports = {
   addToCart,
   removeFromCart,
   decrementCartItem,
+  clearCart,
 };

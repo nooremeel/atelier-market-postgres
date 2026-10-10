@@ -1,6 +1,6 @@
 const request = require('supertest');
 const app = require('../../app');
-const User = require('../../models/user');
+const { User } = require('../../db/models');
 const bcrypt = require('bcryptjs');
 
 async function createAgent(email, role = 'customer') {

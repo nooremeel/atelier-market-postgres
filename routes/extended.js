@@ -3,7 +3,7 @@ const { body, validationResult } = require('express-validator');
 const express = require('express');
 const router = express.Router();
 
-const { Product, Review, Order, OrderItem, User } = require('../db/models');
+const { Product, Review, Order, OrderItem, User, Favourite, Address, SellerProfile } = require('../db/models');
 const { sequelize } = require('../db');
 const isAuth  = require('../middleware/is-auth');
 
@@ -35,36 +35,53 @@ router.get('/products/suggestions', async (req, res, next) => {
 // GET /api/favourites — list user's favourited products
 router.get('/favourites', isAuth, async (req, res, next) => {
     try {
-        const user = req.user.populate ? await req.user.populate('favourites') : req.user;
-        const seen = new Set();
-        const uniqueFavourites = (user.favourites || []).filter(item => {
-            if (!item || (!item._id && !item.id)) return false;
-            const id = (item._id || item.id).toString();
-            if (seen.has(id)) return false;
-            seen.add(id);
-            return true;
+        const userId = req.user.id || req.user._id;
+        const favRecords = await Favourite.findAll({
+            where: { userId },
+            include: [{ model: Product, as: 'product' }],
+            order: [['productId', 'ASC']],
         });
-        res.json({ favourites: uniqueFavourites });
+        const favourites = favRecords
+            .map(f => f.product)
+            .filter(Boolean)
+            .map(p => (p.toJSON ? p.toJSON() : p));
+        res.json({ favourites });
     } catch (err) { next(err); }
 });
 
 // POST /api/favourites — toggle favourite { productId }
 router.post('/favourites',
     isAuth,
-    body('productId').isString().withMessage('Invalid product'),
+    body('productId').isString().trim().notEmpty().withMessage('Invalid product'),
     async (req, res, next) => {
         try {
             const errors = validationResult(req);
             if (!errors.isEmpty()) return res.status(422).json({ errorMessage: errors.array()[0].msg });
 
-            const product = await Product.findById(req.body.productId);
+            const productId = req.body.productId;
+            const product = await Product.findByPk(productId);
             if (!product) return res.status(404).json({ message: 'Product not found' });
 
-            if (req.user.toggleFavourite) {
-                await req.user.toggleFavourite(req.body.productId);
+            const userId = req.user.id || req.user._id;
+            const existing = await Favourite.findOne({ where: { userId, productId: product.id } });
+            let favourited = false;
+            if (existing) {
+                await existing.destroy();
+                favourited = false;
+            } else {
+                try {
+                    await Favourite.create({ userId, productId: product.id });
+                    favourited = true;
+                } catch (err) {
+                    if (err.name === 'SequelizeUniqueConstraintError') {
+                        favourited = true;
+                    } else {
+                        throw err;
+                    }
+                }
             }
-            const isFav = req.user.isFavourite ? req.user.isFavourite(req.body.productId) : false;
-            res.json({ favourited: isFav, count: (req.user.favourites || []).length });
+            const count = await Favourite.count({ where: { userId } });
+            res.json({ favourited, count });
         } catch (err) { next(err); }
     }
 );
@@ -348,9 +365,19 @@ router.delete('/reviews/:reviewId', isAuth, async (req, res, next) => {
 // ─── Account — profile & address ────────────────────────────────────────────
 
 // GET /api/account/profile
-router.get('/account/profile', isAuth, (req, res) => {
-    const { _id, name, email, role, avatar, phone, address, addresses, sellerProfile, favourites, defaultPaymentMethod, savedCard, createdAt } = req.user;
-    res.json({ user: { _id, name, email, role, avatar, phone, address, addresses: addresses || [], sellerProfile, favourites, defaultPaymentMethod: defaultPaymentMethod || 'card', savedCard: savedCard || null, createdAt } });
+router.get('/account/profile', isAuth, async (req, res, next) => {
+    try {
+        const userId = req.user.id || req.user._id;
+        const user = await User.findByPk(userId, {
+            include: [
+                { model: Address, as: 'addresses' },
+                { model: SellerProfile, as: 'sellerProfile' },
+            ],
+            order: [[{ model: Address, as: 'addresses' }, 'isDefault', 'DESC']],
+        });
+        if (!user) return res.status(404).json({ message: 'User not found' });
+        res.json({ user: user.toJSON() });
+    } catch (err) { next(err); }
 });
 
 // PATCH /api/account/profile
@@ -367,36 +394,60 @@ router.patch('/account/profile',
             const errors = validationResult(req);
             if (!errors.isEmpty()) return res.status(422).json({ errorMessage: errors.array()[0].msg });
 
+            const userId = req.user.id || req.user._id;
+            const user = await User.findByPk(userId);
+            if (!user) return res.status(404).json({ message: 'User not found' });
+
             const allowed = ['name', 'phone', 'avatar', 'defaultPaymentMethod'];
-            allowed.forEach(f => { if (req.body[f] !== undefined) req.user[f] = req.body[f]; });
+            allowed.forEach(f => { if (req.body[f] !== undefined) user[f] = req.body[f]; });
 
             if (req.body.savedCard !== undefined) {
-                req.user.savedCard = req.body.savedCard;
+                user.savedCard = req.body.savedCard;
             }
 
             if (req.file) {
-                req.user.avatar = '/' + req.file.path.replace(/\\/g, '/').replace(/^\/+/, '');
+                user.avatar = '/' + req.file.path.replace(/\\/g, '/').replace(/^\/+/, '');
             }
 
             if (req.body.address) {
-                req.user.address = { ...req.user.address.toObject?.() ?? req.user.address, ...req.body.address };
+                const addr = req.body.address;
+                if (addr.street !== undefined) user.addressStreet = addr.street;
+                if (addr.city !== undefined) user.addressCity = addr.city;
+                if (addr.country !== undefined) user.addressCountry = addr.country;
+                if (addr.postalCode !== undefined) user.addressPostal = addr.postalCode;
             }
 
-            // Seller profile fields
-            if (req.user.role === 'seller' && req.body.sellerProfile) {
-                req.user.sellerProfile = { ...(req.user.sellerProfile ?? {}), ...req.body.sellerProfile };
+            if (user.role === 'seller' && req.body.sellerProfile) {
+                const sp = await SellerProfile.findOne({ where: { userId } });
+                if (sp) {
+                    await sp.update(req.body.sellerProfile);
+                }
             }
 
-            await req.user.save();
-            const { _id, name, email, role, avatar, phone, address, addresses, sellerProfile, favourites, defaultPaymentMethod, savedCard, createdAt } = req.user;
-            res.json({ user: { _id, name, email, role, avatar, phone, address, addresses: addresses || [], sellerProfile, favourites, defaultPaymentMethod: defaultPaymentMethod || 'card', savedCard: savedCard || null, createdAt } });
+            await user.save();
+
+            const refreshed = await User.findByPk(userId, {
+                include: [
+                    { model: Address, as: 'addresses' },
+                    { model: SellerProfile, as: 'sellerProfile' },
+                ],
+                order: [[{ model: Address, as: 'addresses' }, 'isDefault', 'DESC']],
+            });
+            res.json({ user: refreshed.toJSON() });
         } catch (err) { next(err); }
     }
 );
 
 // GET /api/account/addresses — list all saved addresses
-router.get('/account/addresses', isAuth, (req, res) => {
-    res.json({ addresses: req.user.addresses || [] });
+router.get('/account/addresses', isAuth, async (req, res, next) => {
+    try {
+        const userId = req.user.id || req.user._id;
+        const addresses = await Address.findAll({
+            where: { userId },
+            order: [['isDefault', 'DESC'], ['createdAt', 'ASC']],
+        });
+        res.json({ addresses });
+    } catch (err) { next(err); }
 });
 
 // POST /api/account/addresses — add a new address
@@ -417,41 +468,48 @@ router.post('/account/addresses',
             const errors = validationResult(req);
             if (!errors.isEmpty()) return res.status(422).json({ errorMessage: errors.array()[0].msg, validationErrors: errors.array() });
 
-            if (!req.user.addresses) req.user.addresses = [];
+            const userId = req.user.id || req.user._id;
 
-            const isFirst = req.user.addresses.length === 0;
-            const makeDefault = req.body.isDefault === true || isFirst;
+            const result = await sequelize.transaction(async (t) => {
+                const existingCount = await Address.count({ where: { userId }, transaction: t });
+                const isFirst = existingCount === 0;
+                const makeDefault = req.body.isDefault === true || isFirst;
 
-            if (makeDefault) {
-                req.user.addresses.forEach(a => { a.isDefault = false; });
-            }
+                if (makeDefault) {
+                    await Address.update({ isDefault: false }, { where: { userId }, transaction: t });
+                }
 
-            const newAddress = {
-                label: (req.body.label || 'Home').trim(),
-                name: (req.body.name || req.user.name || '').trim(),
-                street: req.body.street.trim(),
-                city: req.body.city.trim(),
-                country: req.body.country.trim(),
-                postalCode: (req.body.postalCode || '').trim(),
-                phone: (req.body.phone || req.user.phone || '').trim(),
-                isDefault: makeDefault,
-            };
+                const created = await Address.create({
+                    userId,
+                    label: (req.body.label || 'Home').trim(),
+                    name: (req.body.name || req.user.name || '').trim(),
+                    street: req.body.street.trim(),
+                    city: req.body.city.trim(),
+                    country: req.body.country.trim(),
+                    postalCode: (req.body.postalCode || '').trim(),
+                    phone: (req.body.phone || req.user.phone || '').trim(),
+                    isDefault: makeDefault,
+                }, { transaction: t });
 
-            req.user.addresses.push(newAddress);
+                if (makeDefault) {
+                    await User.update({
+                        addressStreet: created.street,
+                        addressCity: created.city,
+                        addressCountry: created.country,
+                        addressPostal: created.postalCode,
+                    }, { where: { id: userId }, transaction: t });
+                }
 
-            // Sync user.address if this is default
-            if (makeDefault) {
-                req.user.address = {
-                    street: newAddress.street,
-                    city: newAddress.city,
-                    country: newAddress.country,
-                    postalCode: newAddress.postalCode,
-                };
-            }
+                const allAddresses = await Address.findAll({
+                    where: { userId },
+                    order: [['isDefault', 'DESC'], ['createdAt', 'ASC']],
+                    transaction: t,
+                });
 
-            await req.user.save();
-            const created = req.user.addresses[req.user.addresses.length - 1];
-            res.status(201).json({ address: created, addresses: req.user.addresses });
+                return { address: created, addresses: allAddresses };
+            });
+
+            res.status(201).json(result);
         } catch (err) { next(err); }
     }
 );
@@ -474,33 +532,59 @@ router.patch('/account/addresses/:addressId',
             const errors = validationResult(req);
             if (!errors.isEmpty()) return res.status(422).json({ errorMessage: errors.array()[0].msg, validationErrors: errors.array() });
 
-            if (!mongoose.Types.ObjectId.isValid(req.params.addressId)) {
+            const addressId = req.params.addressId;
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (!uuidRegex.test(addressId)) {
                 return res.status(400).json({ message: 'Invalid address ID' });
             }
 
-            const addr = req.user.addresses?.id(req.params.addressId);
-            if (!addr) return res.status(404).json({ message: 'Address not found' });
+            const userId = req.user.id || req.user._id;
 
-            const fields = ['label', 'name', 'street', 'city', 'country', 'postalCode', 'phone'];
-            fields.forEach(f => {
-                if (req.body[f] !== undefined) addr[f] = req.body[f].trim();
+            const result = await sequelize.transaction(async (t) => {
+                const addr = await Address.findOne({
+                    where: { id: addressId, userId },
+                    transaction: t,
+                });
+                if (!addr) {
+                    const err = new Error('Address not found');
+                    err.status = 404;
+                    throw err;
+                }
+
+                const fields = ['label', 'name', 'street', 'city', 'country', 'postalCode', 'phone'];
+                fields.forEach(f => {
+                    if (req.body[f] !== undefined) addr[f] = req.body[f].trim();
+                });
+
+                if (req.body.isDefault === true) {
+                    await Address.update({ isDefault: false }, { where: { userId }, transaction: t });
+                    addr.isDefault = true;
+                    await User.update({
+                        addressStreet: addr.street,
+                        addressCity: addr.city,
+                        addressCountry: addr.country,
+                        addressPostal: addr.postalCode,
+                    }, { where: { id: userId }, transaction: t });
+                }
+
+                await addr.save({ transaction: t });
+
+                const allAddresses = await Address.findAll({
+                    where: { userId },
+                    order: [['isDefault', 'DESC'], ['createdAt', 'ASC']],
+                    transaction: t,
+                });
+
+                return { address: addr, addresses: allAddresses };
             });
 
-            if (req.body.isDefault === true) {
-                req.user.addresses.forEach(a => {
-                    a.isDefault = a._id.toString() === addr._id.toString();
-                });
-                req.user.address = {
-                    street: addr.street,
-                    city: addr.city,
-                    country: addr.country,
-                    postalCode: addr.postalCode,
-                };
+            res.json(result);
+        } catch (err) {
+            if (err.status) {
+                return res.status(err.status).json({ message: err.message });
             }
-
-            await req.user.save();
-            res.json({ address: addr, addresses: req.user.addresses });
-        } catch (err) { next(err); }
+            next(err);
+        }
     }
 );
 
@@ -509,31 +593,68 @@ router.delete('/account/addresses/:addressId',
     isAuth,
     async (req, res, next) => {
         try {
-            if (!mongoose.Types.ObjectId.isValid(req.params.addressId)) {
+            const addressId = req.params.addressId;
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (!uuidRegex.test(addressId)) {
                 return res.status(400).json({ message: 'Invalid address ID' });
             }
 
-            const addr = req.user.addresses?.id(req.params.addressId);
-            if (!addr) return res.status(404).json({ message: 'Address not found' });
+            const userId = req.user.id || req.user._id;
 
-            const wasDefault = addr.isDefault;
-            req.user.addresses.pull(req.params.addressId);
+            const result = await sequelize.transaction(async (t) => {
+                const addr = await Address.findOne({
+                    where: { id: addressId, userId },
+                    transaction: t,
+                });
+                if (!addr) {
+                    const err = new Error('Address not found');
+                    err.status = 404;
+                    throw err;
+                }
 
-            if (wasDefault && req.user.addresses.length > 0) {
-                req.user.addresses[0].isDefault = true;
-                req.user.address = {
-                    street: req.user.addresses[0].street,
-                    city: req.user.addresses[0].city,
-                    country: req.user.addresses[0].country,
-                    postalCode: req.user.addresses[0].postalCode,
-                };
-            } else if (req.user.addresses.length === 0) {
-                req.user.address = { street: '', city: '', country: '', postalCode: '' };
+                const wasDefault = addr.isDefault;
+                await addr.destroy({ transaction: t });
+
+                const remaining = await Address.findAll({
+                    where: { userId },
+                    order: [['createdAt', 'ASC']],
+                    transaction: t,
+                });
+
+                if (wasDefault && remaining.length > 0) {
+                    remaining[0].isDefault = true;
+                    await remaining[0].save({ transaction: t });
+                    await User.update({
+                        addressStreet: remaining[0].street,
+                        addressCity: remaining[0].city,
+                        addressCountry: remaining[0].country,
+                        addressPostal: remaining[0].postalCode,
+                    }, { where: { id: userId }, transaction: t });
+                } else if (remaining.length === 0) {
+                    await User.update({
+                        addressStreet: '',
+                        addressCity: '',
+                        addressCountry: '',
+                        addressPostal: '',
+                    }, { where: { id: userId }, transaction: t });
+                }
+
+                const allAddresses = await Address.findAll({
+                    where: { userId },
+                    order: [['isDefault', 'DESC'], ['createdAt', 'ASC']],
+                    transaction: t,
+                });
+
+                return { message: 'Address removed', addresses: allAddresses };
+            });
+
+            res.json(result);
+        } catch (err) {
+            if (err.status) {
+                return res.status(err.status).json({ message: err.message });
             }
-
-            await req.user.save();
-            res.json({ message: 'Address removed', addresses: req.user.addresses });
-        } catch (err) { next(err); }
+            next(err);
+        }
     }
 );
 
