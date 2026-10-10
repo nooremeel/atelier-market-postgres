@@ -3,9 +3,16 @@
 const { Model, DataTypes } = require('sequelize');
 
 class Review extends Model {
+  static findById(id, options) {
+    return this.findByPk(id, options);
+  }
+
   toJSON() {
     const values = { ...this.get() };
     values._id = values.id;
+    if (this.user) {
+      values.userId = this.user.toJSON ? this.user.toJSON() : this.user;
+    }
     return values;
   }
 }

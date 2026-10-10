@@ -1,11 +1,7 @@
 const request = require('supertest');
 const app = require('../../app');
-const Product = require('../../models/product');
-const Review = require('../../models/review');
-const Order = require('../../models/order');
-const User = require('../../models/user');
+const { Product, Review, Order, OrderItem, User } = require('../../db/models');
 const bcrypt = require('bcryptjs');
-const mongoose = require('mongoose');
 
 async function login(agent, email = 'reviewer@example.com', role = 'customer') {
   const password = 'Passw0rd!x';
@@ -14,7 +10,6 @@ async function login(agent, email = 'reviewer@example.com', role = 'customer') {
     email,
     password: await bcrypt.hash(password, 4),
     role,
-    cart: { items: [] },
   });
   const { body } = await agent.get('/api/csrf-token');
   await agent.post('/api/auth/login').set('csrf-token', body.csrfToken).send({ email, password });
@@ -26,19 +21,26 @@ describe('Reviews API', () => {
   let sellerUser;
 
   beforeEach(async () => {
-    sellerUser = new mongoose.Types.ObjectId();
+    sellerUser = await User.create({
+      name: 'Seller User',
+      email: `seller-${Date.now()}-${Math.random()}@example.com`,
+      password: 'hashedpassword123',
+      role: 'seller',
+    });
     product = await Product.create({
       title: 'Damascus Lantern',
       price: 150,
       description: 'Hand-pierced brass lantern.',
       imageUrl: 'images/lantern.jpg',
-      userId: sellerUser,
-      ratings: { average: 0, count: 0 },
+      sellerId: sellerUser.id,
+      category: 'metals',
+      ratingAverage: 0,
+      ratingCount: 0,
     });
   });
 
   it('GET returns empty reviews list with initialized stats and distribution', async () => {
-    const res = await request(app).get(`/api/products/${product._id}/reviews`);
+    const res = await request(app).get(`/api/products/${product.id}/reviews`);
     expect(res.status).toBe(200);
     expect(res.body.reviews).toHaveLength(0);
     expect(res.body.stats).toEqual({
@@ -54,7 +56,7 @@ describe('Reviews API', () => {
     const agent = request.agent(app);
     const csrf = (await agent.get('/api/csrf-token')).body.csrfToken;
     const res = await agent
-      .post(`/api/products/${product._id}/reviews`)
+      .post(`/api/products/${product.id}/reviews`)
       .set('csrf-token', csrf)
       .send({ rating: 5, title: 'Incredible', body: 'This is an outstanding piece of craftsmanship!' });
     expect(res.status).toBe(401);
@@ -67,7 +69,7 @@ describe('Reviews API', () => {
 
     // Body too short (min 10)
     const res = await agent
-      .post(`/api/products/${product._id}/reviews`)
+      .post(`/api/products/${product.id}/reviews`)
       .set('csrf-token', csrf)
       .send({ rating: 5, title: 'Nice', body: 'Short' });
     expect(res.status).toBe(422);
@@ -79,16 +81,23 @@ describe('Reviews API', () => {
     const csrf = (await agent.get('/api/csrf-token')).body.csrfToken;
 
     // Create a paid order for this user containing this product
-    await Order.create({
-      user: { userId: user._id, email: user.email, name: user.name },
-      products: [{ productData: product.toObject(), quantity: 1 }],
+    const order = await Order.create({
+      userId: user.id,
+      userEmail: user.email,
+      userName: user.name,
       totalPrice: 150,
       status: 'delivered',
       paymentStatus: 'paid',
     });
+    await OrderItem.create({
+      orderId: order.id,
+      productId: product.id,
+      quantity: 1,
+      productSnapshot: product.toJSON(),
+    });
 
     const res = await agent
-      .post(`/api/products/${product._id}/reviews`)
+      .post(`/api/products/${product.id}/reviews`)
       .set('csrf-token', csrf)
       .send({
         rating: 5,
@@ -104,12 +113,12 @@ describe('Reviews API', () => {
     expect(res.body.review.userId.name).toBe('Test Reviewer');
 
     // Verify product ratings updated
-    const updatedProduct = await Product.findById(product._id);
+    const updatedProduct = await Product.findById(product.id);
     expect(updatedProduct.ratings.average).toBe(5);
     expect(updatedProduct.ratings.count).toBe(1);
 
     // GET should now return stats with 5-star count = 1
-    const getRes = await agent.get(`/api/products/${product._id}/reviews`);
+    const getRes = await agent.get(`/api/products/${product.id}/reviews`);
     expect(getRes.body.reviews).toHaveLength(1);
     expect(getRes.body.stats.average).toBe(5);
     expect(getRes.body.stats.total).toBe(1);
@@ -130,13 +139,13 @@ describe('Reviews API', () => {
     };
 
     const first = await agent
-      .post(`/api/products/${product._id}/reviews`)
+      .post(`/api/products/${product.id}/reviews`)
       .set('csrf-token', csrf)
       .send(payload);
     expect(first.status).toBe(201);
 
     const second = await agent
-      .post(`/api/products/${product._id}/reviews`)
+      .post(`/api/products/${product.id}/reviews`)
       .set('csrf-token', csrf)
       .send(payload);
     expect(second.status).toBe(409);
@@ -149,21 +158,21 @@ describe('Reviews API', () => {
     const csrf = (await agent.get('/api/csrf-token')).body.csrfToken;
 
     const postRes = await agent
-      .post(`/api/products/${product._id}/reviews`)
+      .post(`/api/products/${product.id}/reviews`)
       .set('csrf-token', csrf)
       .send({
         rating: 4,
         title: 'Lovely addition to the studio',
         body: 'Warm glow through the pierced patterns, very calming.',
       });
-    const reviewId = postRes.body.review._id;
+    const reviewId = postRes.body.review.id || postRes.body.review._id;
 
     // Delete review
     const delRes = await agent.delete(`/api/reviews/${reviewId}`).set('csrf-token', csrf);
     expect(delRes.status).toBe(200);
 
     // Verify product ratings reset
-    const updatedProduct = await Product.findById(product._id);
+    const updatedProduct = await Product.findById(product.id);
     expect(updatedProduct.ratings.average).toBe(0);
     expect(updatedProduct.ratings.count).toBe(0);
   });
@@ -177,13 +186,12 @@ describe('Reviews API', () => {
       email,
       password: await bcrypt.hash(password, 4),
       role: 'customer',
-      cart: { items: [] },
     });
     const { body } = await agent.get('/api/csrf-token');
     await agent.post('/api/auth/login').set('csrf-token', body.csrfToken).send({ email, password });
 
     const postRes = await agent
-      .post(`/api/products/${product._id}/reviews`)
+      .post(`/api/products/${product.id}/reviews`)
       .set('csrf-token', body.csrfToken)
       .send({
         rating: 5,
@@ -195,7 +203,7 @@ describe('Reviews API', () => {
     expect(postRes.body.review.userName).toBe('Layla Al-Mansoor');
 
     // Confirm user's profile was updated with the name
-    const updatedUser = await User.findById(user._id);
+    const updatedUser = await User.findById(user.id);
     expect(updatedUser.name).toBe('Layla Al-Mansoor');
   });
 });

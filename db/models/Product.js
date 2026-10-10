@@ -3,10 +3,14 @@
 const { Model, DataTypes } = require('sequelize');
 
 class Product extends Model {
+  static findById(id, options) {
+    return this.findByPk(id, options);
+  }
+
   toJSON() {
     const values = { ...this.get() };
     values._id = values.id;
-    values.userId = this.sellerId;
+    values.userId = this.seller ? (this.seller.toJSON ? this.seller.toJSON() : this.seller) : this.sellerId;
     values.ratings = {
       average: this.ratingAverage !== undefined ? Number(this.ratingAverage) : 0,
       count: this.ratingCount !== undefined ? this.ratingCount : 0,
@@ -194,6 +198,12 @@ module.exports = (sequelize) => {
             average: this.ratingAverage !== undefined ? Number(this.ratingAverage) : 0,
             count: this.ratingCount !== undefined ? this.ratingCount : 0,
           };
+        },
+        set(val) {
+          if (val) {
+            if (val.average !== undefined) this.ratingAverage = val.average;
+            if (val.count !== undefined) this.ratingCount = val.count;
+          }
         },
       },
       location: {

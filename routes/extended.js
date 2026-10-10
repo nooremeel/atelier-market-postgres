@@ -3,9 +3,8 @@ const { body, validationResult } = require('express-validator');
 const express = require('express');
 const router = express.Router();
 
-const Product = require('../models/product');
-const Review  = require('../models/review');
-const Order   = require('../models/order');
+const { Product, Review, Order, OrderItem, User } = require('../db/models');
+const { sequelize } = require('../db');
 const isAuth  = require('../middleware/is-auth');
 
 // ─── Product search suggestions ────────────────────────────────────────────
@@ -15,14 +14,17 @@ router.get('/products/suggestions', async (req, res, next) => {
         const q = (req.query.q || '').trim();
         if (!q || q.length < 2) return res.json({ suggestions: [] });
 
-        const docs = await Product.find(
-            { $or: [
-                { title:       { $regex: q, $options: 'i' } },
-                { description: { $regex: q, $options: 'i' } },
-                { tags:        { $regex: q, $options: 'i' } },
-            ]},
-            { title: 1, category: 1, imageUrl: 1, price: 1 }
-        ).limit(6).lean();
+        const query = `
+            SELECT id, id AS _id, title, category, image_url AS "imageUrl", price
+            FROM products
+            WHERE search_vector @@ websearch_to_tsquery('english', :q)
+               OR title ILIKE :likeQ
+            ORDER BY ts_rank(search_vector, websearch_to_tsquery('english', :q)) DESC, created_at DESC
+            LIMIT 6
+        `;
+        const [docs] = await sequelize.query(query, {
+            replacements: { q, likeQ: `%${q}%` },
+        });
 
         res.json({ suggestions: docs });
     } catch (err) { next(err); }
@@ -33,11 +35,11 @@ router.get('/products/suggestions', async (req, res, next) => {
 // GET /api/favourites — list user's favourited products
 router.get('/favourites', isAuth, async (req, res, next) => {
     try {
-        const user = await req.user.populate('favourites');
+        const user = req.user.populate ? await req.user.populate('favourites') : req.user;
         const seen = new Set();
         const uniqueFavourites = (user.favourites || []).filter(item => {
-            if (!item || !item._id) return false;
-            const id = item._id.toString();
+            if (!item || (!item._id && !item.id)) return false;
+            const id = (item._id || item.id).toString();
             if (seen.has(id)) return false;
             seen.add(id);
             return true;
@@ -49,7 +51,7 @@ router.get('/favourites', isAuth, async (req, res, next) => {
 // POST /api/favourites — toggle favourite { productId }
 router.post('/favourites',
     isAuth,
-    body('productId').isMongoId().withMessage('Invalid product'),
+    body('productId').isString().withMessage('Invalid product'),
     async (req, res, next) => {
         try {
             const errors = validationResult(req);
@@ -58,9 +60,11 @@ router.post('/favourites',
             const product = await Product.findById(req.body.productId);
             if (!product) return res.status(404).json({ message: 'Product not found' });
 
-            await req.user.toggleFavourite(req.body.productId);
-            const isFav = req.user.isFavourite(req.body.productId);
-            res.json({ favourited: isFav, count: req.user.favourites.length });
+            if (req.user.toggleFavourite) {
+                await req.user.toggleFavourite(req.body.productId);
+            }
+            const isFav = req.user.isFavourite ? req.user.isFavourite(req.body.productId) : false;
+            res.json({ favourited: isFav, count: (req.user.favourites || []).length });
         } catch (err) { next(err); }
     }
 );
@@ -70,40 +74,43 @@ router.post('/favourites',
 // GET /api/products/:productId/reviews?page=
 router.get('/products/:productId/reviews', async (req, res, next) => {
     try {
-        if (!mongoose.Types.ObjectId.isValid(req.params.productId)) {
+        const productId = req.params.productId;
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (!uuidRegex.test(productId)) {
             return res.status(400).json({ message: 'Invalid product id' });
         }
-        const productIdObj = new mongoose.Types.ObjectId(req.params.productId);
         const page  = Math.max(1, parseInt(req.query.page) || 1);
         const limit = 10;
+        const offset = (page - 1) * limit;
 
-        const productPromise = Product.findById(productIdObj).select('ratings').lean();
-        const reviewsPromise = Review.find({ productId: productIdObj })
-            .sort({ createdAt: -1 })
-            .skip((page - 1) * limit)
-            .limit(limit)
-            .populate('userId', 'name email avatar')
-            .lean();
-        const totalPromise = Review.countDocuments({ productId: productIdObj });
-        const aggPromise = Review.aggregate([
-            { $match: { productId: productIdObj } },
-            { $group: { _id: '$rating', count: { $sum: 1 } } },
-        ]);
+        const product = await Product.findByPk(productId);
+        const reviews = await Review.findAll({
+            where: { productId },
+            order: [['createdAt', 'DESC']],
+            offset,
+            limit,
+            include: [{ model: User, as: 'user', attributes: ['id', 'name', 'email', 'avatar'] }],
+        });
+        const total = await Review.count({ where: { productId } });
 
-        const [product, reviews, total, aggStats] = await Promise.all([
-            productPromise,
-            reviewsPromise,
-            totalPromise,
-            aggPromise,
-        ]);
+        const [aggStats] = await sequelize.query(`
+            SELECT rating, COUNT(*)::int AS count
+            FROM reviews
+            WHERE product_id = :productId
+            GROUP BY rating
+        `, {
+            replacements: { productId },
+        });
 
         // Build distribution
         const distribution = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
         let sum = 0;
         aggStats.forEach((item) => {
-            if (distribution[item._id] !== undefined) {
-                distribution[item._id] = item.count;
-                sum += item._id * item.count;
+            const r = item.rating;
+            const cnt = Number(item.count);
+            if (distribution[r] !== undefined) {
+                distribution[r] = cnt;
+                sum += r * cnt;
             }
         });
 
@@ -111,10 +118,10 @@ router.get('/products/:productId/reviews', async (req, res, next) => {
         let totalCount = total;
 
         // Fallback for legacy seeded products where Review docs may be empty but product.ratings exist
-        if (total === 0 && product?.ratings && product.ratings.count > 0) {
-            average = product.ratings.average;
-            totalCount = product.ratings.count;
-            const highStars = Math.min(5, Math.max(1, Math.round(product.ratings.average)));
+        if (total === 0 && product?.ratingAverage && product.ratingCount > 0) {
+            average = Number(product.ratingAverage);
+            totalCount = Number(product.ratingCount);
+            const highStars = Math.min(5, Math.max(1, Math.round(average)));
             const highCount = Math.round(totalCount * 0.7);
             const midCount = Math.round(totalCount * 0.2);
             const otherCount = Math.max(0, totalCount - highCount - midCount);
@@ -131,26 +138,22 @@ router.get('/products/:productId/reviews', async (req, res, next) => {
         let userHasReviewed = false;
         let isVerifiedPurchaser = false;
         if (req.user) {
-            const [existingUserRev, hasOrder] = await Promise.all([
-                Review.findOne({ productId: productIdObj, userId: req.user._id }),
-                Order.findOne({
-                    'user.userId': req.user._id,
-                    $or: [
-                        { 'products.productData._id': productIdObj },
-                        { 'products.productData._id': req.params.productId },
-                    ],
-                    $and: [
-                        {
-                            $or: [
-                                { paymentStatus: 'paid' },
-                                { status: { $in: ['confirmed', 'shipped', 'delivered'] } },
-                            ],
-                        },
-                    ],
-                }),
-            ]);
+            const userId = req.user.id || req.user._id;
+            const existingUserRev = await Review.findOne({ where: { productId, userId } });
             userHasReviewed = !!existingUserRev;
-            isVerifiedPurchaser = !!hasOrder;
+
+            const [orderRows] = await sequelize.query(`
+                SELECT 1
+                FROM orders o
+                JOIN order_items oi ON o.id = oi.order_id
+                WHERE o.user_id = :userId
+                  AND oi.product_id = :productId
+                  AND (o.payment_status = 'paid' OR o.status IN ('confirmed', 'shipped', 'delivered'))
+                LIMIT 1
+            `, {
+                replacements: { userId, productId },
+            });
+            isVerifiedPurchaser = orderRows.length > 0;
         }
 
         res.json({
@@ -187,70 +190,97 @@ router.post('/products/:productId/reviews',
                 return res.status(422).json({ errorMessage: errors.array()[0].msg, validationErrors: errors.array() });
             }
 
-            if (!mongoose.Types.ObjectId.isValid(req.params.productId)) {
+            const productId = req.params.productId;
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (!uuidRegex.test(productId)) {
                 return res.status(400).json({ message: 'Invalid product id' });
             }
 
-            const product = await Product.findById(req.params.productId);
-            if (!product) return res.status(404).json({ message: 'Product not found' });
+            const userId = req.user.id || req.user._id;
 
-            // Check for duplicate
-            const existing = await Review.findOne({ productId: product._id, userId: req.user._id });
-            if (existing) return res.status(409).json({ message: 'You have already reviewed this product' });
+            const review = await sequelize.transaction(async (t) => {
+                const product = await Product.findByPk(productId, { transaction: t });
+                if (!product) {
+                    const err = new Error('Product not found');
+                    err.status = 404;
+                    throw err;
+                }
 
-            // Check verified purchase
-            const hasOrder = await Order.findOne({
-                'user.userId': req.user._id,
-                $or: [
-                    { 'products.productData._id': product._id },
-                    { 'products.productData._id': product._id.toString() },
-                ],
-                $and: [
-                    {
-                        $or: [
-                            { paymentStatus: 'paid' },
-                            { status: { $in: ['confirmed', 'shipped', 'delivered'] } },
-                        ],
-                    },
-                ],
+                // Check for duplicate
+                const existing = await Review.findOne({
+                    where: { productId, userId },
+                    transaction: t,
+                });
+                if (existing) {
+                    const err = new Error('You have already reviewed this product');
+                    err.status = 409;
+                    throw err;
+                }
+
+                // Check verified purchase
+                const [orderRows] = await sequelize.query(`
+                    SELECT 1
+                    FROM orders o
+                    JOIN order_items oi ON o.id = oi.order_id
+                    WHERE o.user_id = :userId
+                      AND oi.product_id = :productId
+                      AND (o.payment_status = 'paid' OR o.status IN ('confirmed', 'shipped', 'delivered'))
+                    LIMIT 1
+                `, {
+                    replacements: { userId, productId },
+                    transaction: t,
+                });
+                const isVerified = orderRows.length > 0;
+
+                const authorName = (req.body.name || req.user.name || '').trim();
+                const authorAvatar = req.user.avatar || '';
+
+                const createdReview = await Review.create({
+                    productId,
+                    userId,
+                    userName: authorName,
+                    userAvatar: authorAvatar,
+                    rating: Number(req.body.rating),
+                    title: req.body.title.trim(),
+                    body: req.body.body.trim(),
+                    verified: isVerified,
+                }, { transaction: t });
+
+                // Update user profile name if previously empty
+                if ((!req.user.name || !req.user.name.trim()) && authorName) {
+                    req.user.name = authorName;
+                    await req.user.save({ transaction: t });
+                }
+
+                // Recalculate denormalised rating on product in same transaction
+                const [stats] = await sequelize.query(`
+                    SELECT COALESCE(AVG(rating), 0) AS avg, COUNT(*)::int AS cnt
+                    FROM reviews
+                    WHERE product_id = :productId
+                `, {
+                    replacements: { productId },
+                    transaction: t,
+                });
+                const avg = Number(stats[0]?.avg || 0);
+                const cnt = Number(stats[0]?.cnt || 0);
+                product.ratingAverage = Math.round(avg * 10) / 10;
+                product.ratingCount = cnt;
+                await product.save({ transaction: t });
+
+                return Review.findByPk(createdReview.id, {
+                    include: [{ model: User, as: 'user', attributes: ['id', 'name', 'email', 'avatar'] }],
+                    transaction: t,
+                });
             });
-
-            const authorName = (req.body.name || req.user.name || '').trim();
-            const authorAvatar = req.user.avatar || '';
-
-            const review = await Review.create({
-                productId: product._id,
-                userId:    req.user._id,
-                userName:  authorName,
-                userAvatar: authorAvatar,
-                rating:    Number(req.body.rating),
-                title:     req.body.title.trim(),
-                body:      req.body.body.trim(),
-                verified:  !!hasOrder,
-            });
-
-            // Update user profile name if previously empty
-            if ((!req.user.name || !req.user.name.trim()) && authorName) {
-                req.user.name = authorName;
-                await req.user.save();
-            }
-
-            // Recalculate denormalised rating on product
-            const agg = await Review.aggregate([
-                { $match: { productId: product._id } },
-                { $group: { _id: null, avg: { $avg: '$rating' }, cnt: { $sum: 1 } } },
-            ]);
-            if (agg.length) {
-                product.ratings.average = Math.round(agg[0].avg * 10) / 10;
-                product.ratings.count   = agg[0].cnt;
-                await product.save();
-            }
-
-            await review.populate('userId', 'name email avatar');
 
             res.status(201).json({ review });
         } catch (err) {
-            if (err.code === 11000) return res.status(409).json({ message: 'You have already reviewed this product' });
+            if (err.name === 'SequelizeUniqueConstraintError' || err.status === 409) {
+                return res.status(409).json({ message: 'You have already reviewed this product' });
+            }
+            if (err.status) {
+                return res.status(err.status).json({ message: err.message });
+            }
             next(err);
         }
     }
@@ -259,27 +289,60 @@ router.post('/products/:productId/reviews',
 // DELETE /api/reviews/:reviewId — own review or admin
 router.delete('/reviews/:reviewId', isAuth, async (req, res, next) => {
     try {
-        const review = await Review.findById(req.params.reviewId);
-        if (!review) return res.status(404).json({ message: 'Review not found' });
+        const reviewId = req.params.reviewId;
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (!uuidRegex.test(reviewId)) {
+            return res.status(400).json({ message: 'Invalid review id' });
+        }
 
-        const isOwner = review.userId.toString() === req.user._id.toString();
-        const isAdmin = req.user.role === 'admin';
-        if (!isOwner && !isAdmin) return res.status(403).json({ message: 'Not authorised' });
+        await sequelize.transaction(async (t) => {
+            const review = await Review.findByPk(reviewId, { transaction: t });
+            if (!review) {
+                const err = new Error('Review not found');
+                err.status = 404;
+                throw err;
+            }
 
-        await review.deleteOne();
+            const currentUserId = req.user.id || req.user._id;
+            const isOwner = review.userId.toString() === currentUserId.toString();
+            const isAdmin = req.user.role === 'admin';
+            if (!isOwner && !isAdmin) {
+                const err = new Error('Not authorised');
+                err.status = 403;
+                throw err;
+            }
 
-        // Recalculate
-        const agg = await Review.aggregate([
-            { $match: { productId: review.productId } },
-            { $group: { _id: null, avg: { $avg: '$rating' }, cnt: { $sum: 1 } } },
-        ]);
-        await Product.findByIdAndUpdate(review.productId, {
-            'ratings.average': agg.length ? Math.round(agg[0].avg * 10) / 10 : 0,
-            'ratings.count':   agg.length ? agg[0].cnt : 0,
+            const targetProductId = review.productId;
+            await review.destroy({ transaction: t });
+
+            // Recalculate product ratings in same transaction
+            const [stats] = await sequelize.query(`
+                SELECT COALESCE(AVG(rating), 0) AS avg, COUNT(*)::int AS cnt
+                FROM reviews
+                WHERE product_id = :productId
+            `, {
+                replacements: { productId: targetProductId },
+                transaction: t,
+            });
+            const avg = Number(stats[0]?.avg || 0);
+            const cnt = Number(stats[0]?.cnt || 0);
+
+            await Product.update({
+                ratingAverage: Math.round(avg * 10) / 10,
+                ratingCount: cnt,
+            }, {
+                where: { id: targetProductId },
+                transaction: t,
+            });
         });
 
         res.json({ message: 'Review deleted' });
-    } catch (err) { next(err); }
+    } catch (err) {
+        if (err.status) {
+            return res.status(err.status).json({ message: err.message });
+        }
+        next(err);
+    }
 });
 
 // ─── Account — profile & address ────────────────────────────────────────────
@@ -477,12 +540,12 @@ router.delete('/account/addresses/:addressId',
 // ─── Sellers directory ────────────────────────────────────────────────────────
 
 // GET /api/sellers — list all seller accounts (public, for map)
-const User = require('../models/user');
 router.get('/sellers', async (req, res, next) => {
     try {
-        const sellers = await User.find({ role: 'seller' })
-            .select('name avatar sellerProfile email')
-            .lean();
+        const sellers = await User.findAll({
+            where: { role: 'seller' },
+            include: [{ model: sequelize.models.SellerProfile, as: 'sellerProfile' }],
+        });
         res.json({ sellers });
     } catch (err) { next(err); }
 });
@@ -490,16 +553,19 @@ router.get('/sellers', async (req, res, next) => {
 // GET /api/sellers/:id — single seller public profile
 router.get('/sellers/:id', async (req, res, next) => {
     try {
-        if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        if (!uuidRegex.test(req.params.id)) {
             return res.status(400).json({ message: 'Invalid seller id' });
         }
-        const seller = await User.findOne({ _id: req.params.id, role: { $in: ['seller', 'admin'] } })
-            .select('name avatar sellerProfile email createdAt')
-            .lean();
+        const { Op } = require('sequelize');
+        const seller = await User.findOne({
+            where: { id: req.params.id, role: { [Op.in]: ['seller', 'admin'] } },
+            include: [{ model: sequelize.models.SellerProfile, as: 'sellerProfile' }],
+        });
         if (!seller) return res.status(404).json({ message: 'Seller not found' });
 
         // Return seller's products too
-        const products = await Product.find({ userId: req.params.id }).lean();
+        const products = await Product.findAll({ where: { sellerId: req.params.id } });
         res.json({ seller, products });
     } catch (err) { next(err); }
 });
