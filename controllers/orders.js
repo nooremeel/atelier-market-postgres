@@ -47,7 +47,8 @@ exports.postOrder = async (req, res, next) => {
  */
 exports.getOrders = async (req, res, next) => {
   try {
-    const orders = await orderService.getUserOrders(req.user._id);
+    const userId = req.user.id || req.user._id;
+    const orders = await orderService.getUserOrders(userId);
     return res.json({ orders });
   } catch (err) {
     next(err);
@@ -66,7 +67,9 @@ exports.getInvoice = async (req, res, next) => {
       return res.status(404).json({ message: 'Order not found' });
     }
 
-    const isOwner = order.user.userId.toString() === req.user._id.toString();
+    const currentUserId = (req.user.id || req.user._id).toString();
+    const orderUserId = (order.user?.userId || order.userId).toString();
+    const isOwner = orderUserId === currentUserId;
     const isAdmin = req.user.role === 'admin';
     if (!isOwner && !isAdmin) {
       return res.status(403).json({ message: 'Not authorized' });

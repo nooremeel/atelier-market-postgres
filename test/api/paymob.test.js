@@ -1,19 +1,37 @@
 const request = require('supertest');
 const app = require('../../app');
-const Product = require('../../models/product');
-const User = require('../../models/user');
-const Order = require('../../models/order');
+const { Product, User, Order, OrderItem } = require('../../db/models');
 const bcrypt = require('bcryptjs');
-const mongoose = require('mongoose');
 const crypto = require('crypto');
+
+let defaultSeller;
+
+beforeAll(() => {
+  if (!process.env.PAYMOB_HMAC_SECRET) {
+    process.env.PAYMOB_HMAC_SECRET = 'test_paymob_hmac_secret_key_12345';
+  }
+});
+
+beforeEach(async () => {
+  defaultSeller = await User.create({
+    name: 'Artisan Paymob Seller',
+    email: `paymob-seller-${Date.now()}-${Math.random()}@atelier.com`,
+    password: await bcrypt.hash('Passw0rd!x', 4),
+    role: 'seller',
+  });
+});
 
 async function loginAgent(email = 'paymob_user@atelier.com') {
   const agent = request.agent(app);
   const password = 'Passw0rd!x';
-  await User.create({ email, password: await bcrypt.hash(password, 4), cart: { items: [] } });
+  const user = await User.create({
+    email,
+    password: await bcrypt.hash(password, 4),
+    role: 'customer',
+  });
   const csrf = (await agent.get('/api/csrf-token')).body.csrfToken;
   await agent.post('/api/auth/login').set('csrf-token', csrf).send({ email, password });
-  return { agent, csrf };
+  return { agent, csrf, user };
 }
 
 describe('Paymob Payment Integration API', () => {
@@ -24,7 +42,7 @@ describe('Paymob Payment Integration API', () => {
     expect(res.body.message).toMatch(/empty/i);
   });
 
-  it('initiates Paymob session, creates a pending order, and clears cart', async () => {
+  it('initiates Paymob session, creates a pending order, and preserves cart while modal is open', async () => {
     const { agent, csrf } = await loginAgent('initiate_paymob@atelier.com');
     const prod = await Product.create({
       title: 'Handwoven Kilm Runner',
@@ -32,10 +50,11 @@ describe('Paymob Payment Integration API', () => {
       stock: 10,
       description: 'Wool runner',
       imageUrl: 'images/kilm.jpg',
-      userId: new mongoose.Types.ObjectId(),
+      sellerId: defaultSeller.id,
+      category: 'textiles',
     });
 
-    await agent.post('/api/cart').set('csrf-token', csrf).send({ productId: prod._id });
+    await agent.post('/api/cart').set('csrf-token', csrf).send({ productId: prod.id });
 
     const res = await agent.post('/api/paymob/initiate').set('csrf-token', csrf).send({
       shippingAddress: {
@@ -55,11 +74,11 @@ describe('Paymob Payment Integration API', () => {
     expect(res.body.paymentToken).toBeDefined();
 
     // Verify order was created in 'pending' and 'unpaid' state
-    const order = await Order.findById(res.body.orderId);
+    const order = await Order.findByPk(res.body.orderId);
     expect(order).not.toBeNull();
     expect(order.status).toBe('pending');
     expect(order.paymentStatus).toBe('unpaid');
-    expect(order.totalPrice).toBe(120);
+    expect(Number(order.totalPrice)).toBe(120);
 
     // Verify cart was preserved while modal is open (so customer doesn't lose items if dismissed)
     const cartRes = await agent.get('/api/cart');
@@ -67,7 +86,7 @@ describe('Paymob Payment Integration API', () => {
 
     // Verify canceling removes the unconfirmed draft order
     await agent.post('/api/paymob/cancel').set('csrf-token', csrf).send({ orderId: res.body.orderId });
-    const draft = await Order.findById(res.body.orderId);
+    const draft = await Order.findByPk(res.body.orderId);
     expect(draft).toBeNull();
   });
 
@@ -75,7 +94,7 @@ describe('Paymob Payment Integration API', () => {
     const user = await User.create({
       email: 'webhook_cust@atelier.com',
       password: await bcrypt.hash('Passw0rd!x', 4),
-      cart: { items: [] },
+      role: 'customer',
     });
 
     const prod = await Product.create({
@@ -84,16 +103,35 @@ describe('Paymob Payment Integration API', () => {
       stock: 5,
       description: 'Walnut & mother of pearl',
       imageUrl: 'images/box.jpg',
-      userId: new mongoose.Types.ObjectId(),
+      sellerId: defaultSeller.id,
+      category: 'other',
     });
 
     const order = await Order.create({
-      user: { email: user.email, userId: user._id, name: 'Tariq Aziz' },
-      products: [{ productData: { _id: prod._id, title: prod.title, price: 85 }, quantity: 2 }],
+      userId: user.id,
+      userEmail: user.email,
+      userName: 'Tariq Aziz',
+      subtotal: 170,
       totalPrice: 170,
       status: 'pending',
       paymentStatus: 'unpaid',
-      shippingAddress: { name: 'Tariq Aziz', street: 'Hamra', city: 'Beirut', country: 'Lebanon' },
+      shipName: 'Tariq Aziz',
+      shipStreet: 'Hamra',
+      shipCity: 'Beirut',
+      shipCountry: 'Lebanon',
+    });
+
+    await OrderItem.create({
+      orderId: order.id,
+      productId: prod.id,
+      quantity: 2,
+      productSnapshot: {
+        _id: prod.id,
+        id: prod.id,
+        title: prod.title,
+        price: 85,
+        sellerId: defaultSeller.id,
+      },
     });
 
     const webhookPayload = {
@@ -102,7 +140,7 @@ describe('Paymob Payment Integration API', () => {
         success: true,
         order: {
           id: 112233,
-          merchant_order_id: order._id.toString(),
+          merchant_order_id: order.id.toString(),
         },
         amount_cents: 17000,
         currency: 'USD',
@@ -110,7 +148,7 @@ describe('Paymob Payment Integration API', () => {
     };
 
     // Calculate real cryptographic HMAC
-    const hmacSecret = process.env.PAYMOB_HMAC_SECRET || 'test_hmac_secret_placeholder';
+    const hmacSecret = process.env.PAYMOB_HMAC_SECRET;
     const concatenated =
       webhookPayload.obj.amount_cents +
       '' + // created_at
@@ -142,14 +180,14 @@ describe('Paymob Payment Integration API', () => {
     expect(res.body.received).toBe(true);
 
     // Verify order status is updated to confirmed & paid
-    const updatedOrder = await Order.findById(order._id);
+    const updatedOrder = await Order.findByPk(order.id);
     expect(updatedOrder.paymentStatus).toBe('paid');
     expect(updatedOrder.status).toBe('confirmed');
     expect(updatedOrder.paymentReference).toBe('PAYMOB-TXN-7654321');
 
     // Verify product stock was decremented from 5 to 3 (purchased 2)
-    const updatedProd = await Product.findById(prod._id);
-    expect(updatedProd.stock).toBe(3);
+    const updatedProd = await Product.findByPk(prod.id);
+    expect(Number(updatedProd.stock)).toBe(3);
   });
 
   it('rejects webhooks with invalid HMAC signatures', async () => {
@@ -168,10 +206,11 @@ describe('Paymob Payment Integration API', () => {
       stock: 8,
       description: 'Handmade bowl',
       imageUrl: 'images/bowl.jpg',
-      userId: new mongoose.Types.ObjectId(),
+      sellerId: defaultSeller.id,
+      category: 'ceramics',
     });
 
-    await agent.post('/api/cart').set('csrf-token', csrf).send({ productId: prod._id });
+    await agent.post('/api/cart').set('csrf-token', csrf).send({ productId: prod.id });
 
     // 1. Initiate order
     const initRes = await agent.post('/api/paymob/initiate').set('csrf-token', csrf).send({

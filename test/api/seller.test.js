@@ -1,8 +1,6 @@
 const request = require('supertest');
 const app = require('../../app');
-const User = require('../../models/user');
-const Product = require('../../models/product');
-const Order = require('../../models/order');
+const { User, Product, Order, OrderItem, SellerProfile } = require('../../db/models');
 const bcrypt = require('bcryptjs');
 
 async function createAgent(email, role = 'seller', sellerProfile = {}) {
@@ -13,14 +11,17 @@ async function createAgent(email, role = 'seller', sellerProfile = {}) {
     password: await bcrypt.hash(password, 4),
     role,
     name: email.split('@')[0],
-    sellerProfile: role === 'seller' ? {
+  });
+  if (role === 'seller') {
+    await SellerProfile.create({
+      userId: user.id,
       shopName: `${email.split('@')[0]} Studio`,
       shopDescription: 'Artisanal crafts',
-      location: { city: 'Riyadh', country: 'Saudi Arabia' },
+      city: 'Riyadh',
+      country: 'Saudi Arabia',
       ...sellerProfile,
-    } : null,
-    cart: { items: [] },
-  });
+    });
+  }
   const csrf = (await agent.get('/api/csrf-token')).body.csrfToken;
   await agent.post('/api/auth/login').set('csrf-token', csrf).send({ email, password });
   return { agent, csrf, user };
@@ -60,8 +61,10 @@ describe('Seller API', () => {
         price: 120,
         description: 'Handmade stoneware jar',
         imageUrl: 'images/test.jpg',
-        userId: userA._id,
-        ratings: { average: 4.8, count: 5 },
+        sellerId: userA.id,
+        category: 'ceramics',
+        ratingAverage: 4.8,
+        ratingCount: 5,
       });
 
       const prodA2 = await Product.create({
@@ -69,8 +72,10 @@ describe('Seller API', () => {
         price: 40,
         description: 'Delicate porcelain tea cup',
         imageUrl: 'images/test2.jpg',
-        userId: userA._id,
-        ratings: { average: 5.0, count: 3 },
+        sellerId: userA.id,
+        category: 'ceramics',
+        ratingAverage: 5.0,
+        ratingCount: 3,
       });
 
       // Create product for Seller B
@@ -79,32 +84,70 @@ describe('Seller API', () => {
         price: 90,
         description: 'Vegetable-tanned leather wallet',
         imageUrl: 'images/test3.jpg',
-        userId: userB._id,
-        ratings: { average: 4.5, count: 2 },
+        sellerId: userB.id,
+        category: 'leather',
+        ratingAverage: 4.5,
+        ratingCount: 2,
       });
 
       // Order 1: Paid order containing prodA1 (qty 2) + prodB (qty 1)
-      await Order.create({
-        user: { email: customer.email, userId: customer._id, name: 'Buyer' },
-        products: [
-          { productData: prodA1.toObject(), quantity: 2 }, // $240 for A
-          { productData: prodB.toObject(), quantity: 1 },  // $90 for B
-        ],
+      const order1 = await Order.create({
+        userId: customer.id,
+        userEmail: customer.email,
+        userName: 'Buyer',
+        subtotal: 330,
         totalPrice: 330,
         status: 'delivered',
         paymentStatus: 'paid',
-        shippingAddress: { city: 'Riyadh', country: 'Saudi Arabia' },
+        shipCity: 'Riyadh',
+        shipCountry: 'Saudi Arabia',
+      });
+      await OrderItem.create({
+        orderId: order1.id,
+        productId: prodA1.id,
+        quantity: 2,
+        productSnapshot: {
+          _id: prodA1.id,
+          id: prodA1.id,
+          title: prodA1.title,
+          price: 120,
+          sellerId: userA.id,
+        },
+      });
+      await OrderItem.create({
+        orderId: order1.id,
+        productId: prodB.id,
+        quantity: 1,
+        productSnapshot: {
+          _id: prodB.id,
+          id: prodB.id,
+          title: prodB.title,
+          price: 90,
+          sellerId: userB.id,
+        },
       });
 
       // Order 2: Pending/unpaid order containing prodA2 (qty 1)
-      await Order.create({
-        user: { email: customer.email, userId: customer._id, name: 'Buyer' },
-        products: [
-          { productData: prodA2.toObject(), quantity: 1 }, // $40 for A
-        ],
+      const order2 = await Order.create({
+        userId: customer.id,
+        userEmail: customer.email,
+        userName: 'Buyer',
+        subtotal: 40,
         totalPrice: 40,
         status: 'pending',
         paymentStatus: 'unpaid',
+      });
+      await OrderItem.create({
+        orderId: order2.id,
+        productId: prodA2.id,
+        quantity: 1,
+        productSnapshot: {
+          _id: prodA2.id,
+          id: prodA2.id,
+          title: prodA2.title,
+          price: 40,
+          sellerId: userA.id,
+        },
       });
 
       const resA = await sellerA.get('/api/seller/stats');
@@ -132,7 +175,8 @@ describe('Seller API', () => {
         price: 150,
         description: 'Fine Belgian linen throw',
         imageUrl: 'images/linen.jpg',
-        userId: userA._id,
+        sellerId: userA.id,
+        category: 'textiles',
       });
 
       const prodB = await Product.create({
@@ -140,38 +184,75 @@ describe('Seller API', () => {
         price: 85,
         description: 'Hand-blown glass decanter',
         imageUrl: 'images/glass.jpg',
-        userId: userB._id,
+        sellerId: userB.id,
+        category: 'glass',
       });
 
       // Combined order
       const combinedOrder = await Order.create({
-        user: { email: customer.email, userId: customer._id, name: 'Alice Walker' },
-        products: [
-          { productData: prodA.toObject(), quantity: 1 },
-          { productData: prodB.toObject(), quantity: 2 },
-        ],
+        userId: customer.id,
+        userEmail: customer.email,
+        userName: 'Alice Walker',
+        subtotal: 320,
         totalPrice: 320,
         status: 'confirmed',
         paymentStatus: 'paid',
-        shippingAddress: { city: 'London', country: 'UK' },
+        shipCity: 'London',
+        shipCountry: 'UK',
+      });
+      await OrderItem.create({
+        orderId: combinedOrder.id,
+        productId: prodA.id,
+        quantity: 1,
+        productSnapshot: {
+          _id: prodA.id,
+          id: prodA.id,
+          title: prodA.title,
+          price: 150,
+          sellerId: userA.id,
+        },
+      });
+      await OrderItem.create({
+        orderId: combinedOrder.id,
+        productId: prodB.id,
+        quantity: 2,
+        productSnapshot: {
+          _id: prodB.id,
+          id: prodB.id,
+          title: prodB.title,
+          price: 85,
+          sellerId: userB.id,
+        },
       });
 
       // Exclusive order for B
-      await Order.create({
-        user: { email: customer.email, userId: customer._id, name: 'Alice Walker' },
-        products: [
-          { productData: prodB.toObject(), quantity: 1 },
-        ],
+      const exclusiveB = await Order.create({
+        userId: customer.id,
+        userEmail: customer.email,
+        userName: 'Alice Walker',
+        subtotal: 85,
         totalPrice: 85,
         status: 'pending',
         paymentStatus: 'paid',
+      });
+      await OrderItem.create({
+        orderId: exclusiveB.id,
+        productId: prodB.id,
+        quantity: 1,
+        productSnapshot: {
+          _id: prodB.id,
+          id: prodB.id,
+          title: prodB.title,
+          price: 85,
+          sellerId: userB.id,
+        },
       });
 
       // Seller A should see only combinedOrder with only their item
       const resA = await sellerA.get('/api/seller/orders');
       expect(resA.status).toBe(200);
       expect(resA.body.orders).toHaveLength(1);
-      expect(resA.body.orders[0]._id.toString()).toBe(combinedOrder._id.toString());
+      expect(resA.body.orders[0]._id.toString()).toBe(combinedOrder.id.toString());
       expect(resA.body.orders[0].products).toHaveLength(1);
       expect(resA.body.orders[0].products[0].productData.title).toBe('Woven Linen Throw');
       expect(resA.body.orders[0].sellerSubtotal).toBe(150);
@@ -201,27 +282,42 @@ describe('Seller API', () => {
         price: 210,
         description: 'Cast bronze kitchen mortar',
         imageUrl: 'images/mortar.jpg',
-        userId: userA._id,
+        sellerId: userA.id,
+        category: 'metals',
       });
 
       const order = await Order.create({
-        user: { email: customer.email, userId: customer._id, name: 'Collector' },
-        products: [{ productData: prodA.toObject(), quantity: 1 }],
+        userId: customer.id,
+        userEmail: customer.email,
+        userName: 'Collector',
+        subtotal: 210,
         totalPrice: 210,
         status: 'pending',
         paymentStatus: 'paid',
       });
+      await OrderItem.create({
+        orderId: order.id,
+        productId: prodA.id,
+        quantity: 1,
+        productSnapshot: {
+          _id: prodA.id,
+          id: prodA.id,
+          title: prodA.title,
+          price: 210,
+          sellerId: userA.id,
+        },
+      });
 
       // Unrelated seller cannot modify this order
       const resForbidden = await sellerUnrelated
-        .patch(`/api/seller/orders/${order._id}/status`)
+        .patch(`/api/seller/orders/${order.id}/status`)
         .set('csrf-token', csrfUnrelated)
         .send({ status: 'shipped', trackingNumber: 'TRK-9999' });
       expect(resForbidden.status).toBe(403);
 
       // Seller A modifies status to 'crafting' with custom note and carrier
       const resCrafting = await sellerA
-        .patch(`/api/seller/orders/${order._id}/status`)
+        .patch(`/api/seller/orders/${order.id}/status`)
         .set('csrf-token', csrfA)
         .send({
           status: 'crafting',
@@ -238,7 +334,7 @@ describe('Seller API', () => {
 
       // Seller A modifies status to 'shipped' with tracking number
       const resOk = await sellerA
-        .patch(`/api/seller/orders/${order._id}/status`)
+        .patch(`/api/seller/orders/${order.id}/status`)
         .set('csrf-token', csrfA)
         .send({ status: 'shipped', trackingNumber: 'DHL-EXPRESS-10293' });
 
@@ -250,7 +346,7 @@ describe('Seller API', () => {
 
       // Invalid status test
       const resInvalid = await sellerA
-        .patch(`/api/seller/orders/${order._id}/status`)
+        .patch(`/api/seller/orders/${order.id}/status`)
         .set('csrf-token', csrfA)
         .send({ status: 'bogus_status' });
       expect(resInvalid.status).toBe(422);

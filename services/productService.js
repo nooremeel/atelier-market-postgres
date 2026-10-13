@@ -172,7 +172,7 @@ function serializeAdminProduct(p, fallbackUser) {
       value: p.discountValue !== undefined ? Number(p.discountValue) : 0,
       isActive: Boolean(p.discountActive),
     },
-    badge: p.badge || null,
+    badge: p.badge || '',
     description: p.description,
     imageUrl: p.imageUrl,
     userId: isPopulated ? (userObj._id || userObj.id) : (p.sellerId || p.userId),

@@ -24,6 +24,26 @@ class Order extends Model {
       discountValue: this.discountValue !== undefined ? Number(this.discountValue) : 0,
       amount: this.discountAmount !== undefined ? Number(this.discountAmount) : 0,
     };
+    if (this.items) {
+      values.products = this.items.map((i) => ({
+        _id: i.id || i._id,
+        id: i.id || i._id,
+        quantity: i.quantity,
+        productData: i.productSnapshot || i.productData,
+        variant: i.variantSnapshot || i.variant,
+        productId: i.productId,
+        variantId: i.variantId,
+      }));
+    }
+    if (this.timeline) {
+      values.timeline = this.timeline.map((t) => ({
+        _id: t.id || t._id,
+        id: t.id || t._id,
+        status: t.status,
+        timestamp: t.createdAt || t.timestamp,
+        note: t.note || '',
+      }));
+    }
     return values;
   }
 }
@@ -211,6 +231,21 @@ module.exports = (sequelize) => {
             discountValue: this.discountValue !== undefined ? Number(this.discountValue) : 0,
             amount: this.discountAmount !== undefined ? Number(this.discountAmount) : 0,
           };
+        },
+      },
+      products: {
+        type: DataTypes.VIRTUAL,
+        get() {
+          if (!this.items) return [];
+          return this.items.map((i) => ({
+            _id: i.id || i._id,
+            id: i.id || i._id,
+            quantity: i.quantity,
+            productData: i.productSnapshot || i.productData,
+            variant: i.variantSnapshot || i.variant,
+            productId: i.productId,
+            variantId: i.variantId,
+          }));
         },
       },
     },

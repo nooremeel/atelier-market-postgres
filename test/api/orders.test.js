@@ -1,18 +1,30 @@
 const request = require('supertest');
 const app = require('../../app');
-const Product = require('../../models/product');
-const User = require('../../models/user');
-const Order = require('../../models/order');
+const { Product, ProductVariant, User, Order } = require('../../db/models');
 const bcrypt = require('bcryptjs');
-const mongoose = require('mongoose');
+
+let defaultSeller;
+
+beforeEach(async () => {
+  defaultSeller = await User.create({
+    name: 'Artisan Master',
+    email: `seller-${Date.now()}-${Math.random()}@ateliermarket.com`,
+    password: await bcrypt.hash('Passw0rd!x', 4),
+    role: 'seller',
+  });
+});
 
 async function loginAgent(email = 'o@b.com') {
   const agent = request.agent(app);
   const password = 'Passw0rd!x';
-  await User.create({ email, password: await bcrypt.hash(password, 4), cart: { items: [] } });
+  const user = await User.create({
+    email,
+    password: await bcrypt.hash(password, 4),
+    role: 'customer',
+  });
   const csrf = (await agent.get('/api/csrf-token')).body.csrfToken;
   await agent.post('/api/auth/login').set('csrf-token', csrf).send({ email, password });
-  return { agent, csrf };
+  return { agent, csrf, user };
 }
 
 describe('orders API', () => {
@@ -25,10 +37,15 @@ describe('orders API', () => {
   it('places an order, clears the cart, lists it, streams a PDF', async () => {
     const { agent, csrf } = await loginAgent('o2@b.com');
     const p = await Product.create({
-      title: 'Zaatar', price: 8, description: 'Wild thyme blend', imageUrl: 'images/z.jpg',
-      userId: new mongoose.Types.ObjectId(),
+      title: 'Zaatar',
+      price: 8,
+      description: 'Wild thyme blend',
+      imageUrl: 'images/z.jpg',
+      sellerId: defaultSeller.id,
+      category: 'other',
+      stock: 20,
     });
-    await agent.post('/api/cart').set('csrf-token', csrf).send({ productId: p._id });
+    await agent.post('/api/cart').set('csrf-token', csrf).send({ productId: p.id });
 
     let res = await agent.post('/api/orders').set('csrf-token', csrf).send({});
     expect(res.status).toBe(201);
@@ -53,10 +70,15 @@ describe('orders API', () => {
   it('saves contact info, default address, and payment preferences to profile when requested', async () => {
     const { agent, csrf } = await loginAgent('saveprofile@b.com');
     const p = await Product.create({
-      title: 'Ceramic Vase', price: 45, description: 'Handcrafted stoneware vase', imageUrl: 'images/vase.jpg',
-      userId: new mongoose.Types.ObjectId(),
+      title: 'Ceramic Vase',
+      price: 45,
+      description: 'Handcrafted stoneware vase',
+      imageUrl: 'images/vase.jpg',
+      sellerId: defaultSeller.id,
+      category: 'ceramics',
+      stock: 20,
     });
-    await agent.post('/api/cart').set('csrf-token', csrf).send({ productId: p._id });
+    await agent.post('/api/cart').set('csrf-token', csrf).send({ productId: p.id });
 
     const res = await agent.post('/api/orders').set('csrf-token', csrf).send({
       shippingAddress: {
@@ -105,30 +127,36 @@ describe('orders API', () => {
   it('decrements stock of purchased products upon order placement', async () => {
     const { agent, csrf } = await loginAgent('stockdecrement@b.com');
     const p = await Product.create({
-      title: 'Handmade Silk Scarf', price: 90, description: 'Natural dye silk', imageUrl: 'images/silk.jpg',
-      userId: new mongoose.Types.ObjectId(),
+      title: 'Handmade Silk Scarf',
+      price: 90,
+      description: 'Natural dye silk',
+      imageUrl: 'images/silk.jpg',
+      sellerId: defaultSeller.id,
       stock: 10,
     });
 
-    await agent.post('/api/cart').set('csrf-token', csrf).send({ productId: p._id });
-    await agent.post('/api/cart').set('csrf-token', csrf).send({ productId: p._id });
+    await agent.post('/api/cart').set('csrf-token', csrf).send({ productId: p.id });
+    await agent.post('/api/cart').set('csrf-token', csrf).send({ productId: p.id });
 
     const res = await agent.post('/api/orders').set('csrf-token', csrf).send({});
     expect(res.status).toBe(201);
 
-    const updated = await Product.findById(p._id);
-    expect(updated.stock).toBe(8);
+    const updated = await Product.findByPk(p.id);
+    expect(Number(updated.stock)).toBe(8);
   });
 
   it('rejects order placement if a product in cart is sold out', async () => {
     const { agent, csrf } = await loginAgent('soldoutorder@b.com');
     const p = await Product.create({
-      title: 'Copper Lamp', price: 150, description: 'Hand-hammered lamp', imageUrl: 'images/lamp.jpg',
-      userId: new mongoose.Types.ObjectId(),
+      title: 'Copper Lamp',
+      price: 150,
+      description: 'Hand-hammered lamp',
+      imageUrl: 'images/lamp.jpg',
+      sellerId: defaultSeller.id,
       stock: 1,
     });
 
-    await agent.post('/api/cart').set('csrf-token', csrf).send({ productId: p._id });
+    await agent.post('/api/cart').set('csrf-token', csrf).send({ productId: p.id });
 
     // Simulate product selling out before checkout
     p.stock = 0;
@@ -142,10 +170,14 @@ describe('orders API', () => {
   it('allows admin to download any invoice, but forbids non-owner customers', async () => {
     const { agent: customerAgent, csrf: customerCsrf } = await loginAgent('customer_inv@b.com');
     const p = await Product.create({
-      title: 'Ceramic Pitcher', price: 60, description: 'Earthy glaze', imageUrl: 'images/p.jpg',
-      userId: new mongoose.Types.ObjectId(),
+      title: 'Ceramic Pitcher',
+      price: 60,
+      description: 'Earthy glaze',
+      imageUrl: 'images/p.jpg',
+      sellerId: defaultSeller.id,
+      stock: 10,
     });
-    await customerAgent.post('/api/cart').set('csrf-token', customerCsrf).send({ productId: p._id });
+    await customerAgent.post('/api/cart').set('csrf-token', customerCsrf).send({ productId: p.id });
     const orderRes = await customerAgent.post('/api/orders').set('csrf-token', customerCsrf).send({});
     const orderId = orderRes.body.order._id;
 
@@ -156,9 +188,16 @@ describe('orders API', () => {
 
     const adminAgent = request.agent(app);
     const adminPassword = 'Passw0rd!admin';
-    await User.create({ email: 'admin_inv@b.com', password: await bcrypt.hash(adminPassword, 4), role: 'admin' });
+    await User.create({
+      email: 'admin_inv@b.com',
+      password: await bcrypt.hash(adminPassword, 4),
+      role: 'admin',
+    });
     const adminCsrf = (await adminAgent.get('/api/csrf-token')).body.csrfToken;
-    await adminAgent.post('/api/auth/login').set('csrf-token', adminCsrf).send({ email: 'admin_inv@b.com', password: adminPassword });
+    await adminAgent.post('/api/auth/login').set('csrf-token', adminCsrf).send({
+      email: 'admin_inv@b.com',
+      password: adminPassword,
+    });
 
     const adminInvoiceRes = await adminAgent.get(`/api/orders/${orderId}/invoice`);
     expect(adminInvoiceRes.status).toBe(200);
@@ -168,10 +207,14 @@ describe('orders API', () => {
   it('generates a luxury PDF invoice with discounts and shipping fees', async () => {
     const { agent, csrf } = await loginAgent('discount_inv@b.com');
     const p = await Product.create({
-      title: 'Artisanal Terracotta Vessel', price: 100, description: 'Hand-thrown clay vessel from Bahrain', imageUrl: 'images/vessel.jpg',
-      userId: new mongoose.Types.ObjectId(),
+      title: 'Artisanal Terracotta Vessel',
+      price: 100,
+      description: 'Hand-thrown clay vessel from Bahrain',
+      imageUrl: 'images/vessel.jpg',
+      sellerId: defaultSeller.id,
+      stock: 10,
     });
-    await agent.post('/api/cart').set('csrf-token', csrf).send({ productId: p._id });
+    await agent.post('/api/cart').set('csrf-token', csrf).send({ productId: p.id });
     const orderRes = await agent.post('/api/orders').set('csrf-token', csrf).send({
       shippingFee: 15,
       shippingAddress: {
@@ -187,18 +230,24 @@ describe('orders API', () => {
     const orderId = orderRes.body.order._id;
 
     // Update with discount to verify discount rendering in invoice
-    await Order.findByIdAndUpdate(orderId, {
-      discount: { code: 'SAVE10', amount: 10, discountType: 'percentage', discountValue: 10 },
-      shippingFee: 15,
-      totalPrice: 105,
-    });
+    await Order.update(
+      {
+        discountCode: 'SAVE10',
+        discountAmount: 10,
+        discountType: 'percentage',
+        discountValue: 10,
+        shippingFee: 15,
+        totalPrice: 105,
+      },
+      { where: { id: orderId } }
+    );
 
     const res = await agent.get(`/api/orders/${orderId}/invoice`);
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toMatch(/pdf/);
     expect(res.headers['content-disposition']).toMatch(/inline; filename="invoice-/);
     expect(res.body).toBeInstanceOf(Buffer);
-    expect(res.body.length).toBeGreaterThan(1000); // Confirms non-empty rich PDF document
+    expect(res.body.length).toBeGreaterThan(1000);
   });
 
   it('places order with variant line item and decrements variant stock', async () => {
@@ -208,19 +257,28 @@ describe('orders API', () => {
       price: 150,
       description: 'Hand-woven raw silk',
       imageUrl: 'images/silk.jpg',
-      userId: new mongoose.Types.ObjectId(),
+      sellerId: defaultSeller.id,
       stock: 10,
-      variants: [
-        { name: 'Emerald / Gold', sku: 'SCARF-EM', price: 175, stock: 4 },
-        { name: 'Indigo / Silver', sku: 'SCARF-IN', price: 165, stock: 6 },
-      ],
     });
-    const emeraldVar = p.variants[0];
+    const emeraldVar = await ProductVariant.create({
+      productId: p.id,
+      name: 'Emerald / Gold',
+      sku: 'SCARF-EM',
+      price: 175,
+      stock: 4,
+    });
+    await ProductVariant.create({
+      productId: p.id,
+      name: 'Indigo / Silver',
+      sku: 'SCARF-IN',
+      price: 165,
+      stock: 6,
+    });
 
     // Add 2 of emerald variant to cart
     await agent.post('/api/cart').set('csrf-token', csrf).send({
-      productId: p._id,
-      variantId: emeraldVar._id,
+      productId: p.id,
+      variantId: emeraldVar.id,
       quantity: 2,
     });
 
@@ -234,10 +292,9 @@ describe('orders API', () => {
     expect(orderRes.body.order.products[0].variant.price).toBe(175);
 
     // Verify stock decrement in database
-    const updatedProd = await Product.findById(p._id);
-    const updatedEmerald = updatedProd.variants.find((v) => v._id.toString() === emeraldVar._id.toString());
-    expect(updatedEmerald.stock).toBe(2); // 4 - 2
-    expect(updatedProd.stock).toBe(8); // 10 - 2
+    const updatedProd = await Product.findByPk(p.id);
+    const updatedEmerald = await ProductVariant.findByPk(emeraldVar.id);
+    expect(Number(updatedEmerald.stock)).toBe(2); // 4 - 2
+    expect(Number(updatedProd.stock)).toBe(8); // 10 - 2
   });
 });
-

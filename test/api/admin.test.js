@@ -1,15 +1,17 @@
 const request = require('supertest');
 const path = require('path');
 const app = require('../../app');
-const User = require('../../models/user');
-const Product = require('../../models/product');
-const Order = require('../../models/order');
+const { User, Product, Order, OrderItem, SellerProfile } = require('../../db/models');
 const bcrypt = require('bcryptjs');
 
 async function adminAgent(email = 'admin@shop.com', role = 'admin') {
   const agent = request.agent(app);
   const password = 'Passw0rd!x';
-  const user = await User.create({ email, password: await bcrypt.hash(password, 4), role, cart: { items: [] } });
+  const user = await User.create({
+    email,
+    password: await bcrypt.hash(password, 4),
+    role,
+  });
   const csrf = (await agent.get('/api/csrf-token')).body.csrfToken;
   await agent.post('/api/auth/login').set('csrf-token', csrf).send({ email, password });
   return { agent, csrf, user };
@@ -81,25 +83,45 @@ describe('Platform Admin Dedicated API', () => {
     const otherSeller = await User.create({
       name: 'Artisan Zayd',
       email: 'zayd@shop.com',
-      password: 'hash',
+      password: await bcrypt.hash('hash', 4),
       role: 'seller',
-      sellerProfile: { shopName: 'Zayd Pottery' },
     });
+    await SellerProfile.create({
+      userId: otherSeller.id,
+      shopName: 'Zayd Pottery',
+    });
+
     const product = await Product.create({
       title: 'Zayd Glazed Jar',
       price: 150,
       description: 'Handmade jar',
       imageUrl: 'images/jar.jpg',
-      userId: otherSeller._id,
+      sellerId: otherSeller.id,
+      category: 'ceramics',
     });
 
     // Seed an order
-    await Order.create({
-      user: { email: 'buyer@shop.com', userId: adminUser._id, name: 'Buyer' },
-      products: [{ productData: product, quantity: 2 }],
+    const order = await Order.create({
+      userId: adminUser.id,
+      userEmail: 'buyer@shop.com',
+      userName: 'Buyer',
+      subtotal: 300,
       totalPrice: 300,
       status: 'confirmed',
       paymentStatus: 'paid',
+    });
+
+    await OrderItem.create({
+      orderId: order.id,
+      productId: product.id,
+      quantity: 2,
+      productSnapshot: {
+        _id: product.id,
+        id: product.id,
+        title: product.title,
+        price: 150,
+        sellerId: otherSeller.id,
+      },
     });
 
     const res = await agent.get('/api/admin/stats');

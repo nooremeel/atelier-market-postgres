@@ -1,8 +1,6 @@
 const adminService = require('../../services/adminService');
 const productService = require('../../services/productService');
-const User = require('../../models/user');
-const Product = require('../../models/product');
-const Order = require('../../models/order');
+const { User, Product, Order, OrderItem, SellerProfile } = require('../../db/models');
 const bcrypt = require('bcryptjs');
 
 describe('adminService & productService admin methods', () => {
@@ -11,30 +9,30 @@ describe('adminService & productService admin methods', () => {
   beforeEach(async () => {
     sellerUser = await User.create({
       name: 'Artisan Samira',
-      email: 'samira@ateliermarket.com',
+      email: `samira-${Date.now()}-${Math.random()}@ateliermarket.com`,
       password: await bcrypt.hash('Demo1234!', 4),
       role: 'seller',
-      sellerProfile: {
-        shopName: 'Samira Glazes',
-        location: { city: 'Tunis', country: 'Tunisia' },
-      },
-      cart: { items: [] },
     });
+    await SellerProfile.create({
+      userId: sellerUser.id,
+      shopName: 'Samira Glazes',
+      city: 'Tunis',
+      country: 'Tunisia',
+    });
+    await sellerUser.reload({ include: [{ model: SellerProfile, as: 'sellerProfile' }] });
 
     customerUser = await User.create({
       name: 'Buyer Karim',
-      email: 'karim@example.com',
+      email: `karim-${Date.now()}-${Math.random()}@example.com`,
       password: await bcrypt.hash('Demo1234!', 4),
       role: 'customer',
-      cart: { items: [] },
     });
 
     adminUser = await User.create({
       name: 'Director Nadia',
-      email: 'nadia@ateliermarket.com',
+      email: `nadia-${Date.now()}-${Math.random()}@ateliermarket.com`,
       password: await bcrypt.hash('Demo1234!', 4),
       role: 'admin',
-      cart: { items: [] },
     });
   });
 
@@ -45,16 +43,32 @@ describe('adminService & productService admin methods', () => {
         price: 120,
         description: 'Hand-thrown terracotta vase',
         imageUrl: 'images/vase.jpg',
-        userId: sellerUser._id,
+        sellerId: sellerUser.id,
+        category: 'ceramics',
         stock: 10,
       });
 
-      await Order.create({
-        user: { email: customerUser.email, userId: customerUser._id, name: customerUser.name },
-        products: [{ productData: product, quantity: 2 }],
+      const order = await Order.create({
+        userId: customerUser.id,
+        userEmail: customerUser.email,
+        userName: customerUser.name,
+        subtotal: 240,
         totalPrice: 240,
         status: 'confirmed',
         paymentStatus: 'paid',
+      });
+
+      await OrderItem.create({
+        orderId: order.id,
+        productId: product.id,
+        quantity: 2,
+        productSnapshot: {
+          _id: product.id,
+          id: product.id,
+          title: product.title,
+          price: 120,
+          sellerId: sellerUser.id,
+        },
       });
 
       const { stats, recentOrders, topArtisans } = await adminService.getPlatformStats();
@@ -80,7 +94,8 @@ describe('adminService & productService admin methods', () => {
         price: 50,
         description: 'Small ceramic plate',
         imageUrl: 'images/plate.jpg',
-        userId: sellerUser._id,
+        sellerId: sellerUser.id,
+        category: 'ceramics',
       });
 
       const orders = await adminService.getAllOrders();
@@ -88,7 +103,7 @@ describe('adminService & productService admin methods', () => {
 
       const artisans = await adminService.getArtisansDirectory();
       expect(artisans).toHaveLength(1);
-      expect(artisans[0].email).toBe('samira@ateliermarket.com');
+      expect(artisans[0].email).toBe(sellerUser.email);
       expect(artisans[0].productCount).toBe(1);
     });
   });
@@ -120,8 +135,8 @@ describe('adminService & productService admin methods', () => {
       // 3. Reject inspection from unauthorized user
       const otherUser = await User.create({
         name: 'Other Seller',
-        email: 'other@shop.com',
-        password: 'hash',
+        email: `other-${Date.now()}@shop.com`,
+        password: await bcrypt.hash('hash', 4),
         role: 'seller',
       });
       await expect(productService.getAdminProductById(created._id, otherUser)).rejects.toThrow('Not authorized');
@@ -160,7 +175,7 @@ describe('adminService & productService admin methods', () => {
 
       // 7. Delete product
       await productService.deleteProductById(created._id, sellerUser);
-      const afterDelete = await Product.findById(created._id);
+      const afterDelete = await Product.findByPk(created._id);
       expect(afterDelete).toBeNull();
     });
   });
