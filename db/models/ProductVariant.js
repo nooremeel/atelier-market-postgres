@@ -46,6 +46,10 @@ module.exports = (sequelize) => {
       price: {
         type: DataTypes.DECIMAL(12, 2),
         allowNull: false,
+        get() {
+          const raw = this.getDataValue('price');
+          return raw === null || raw === undefined ? null : Number(raw);
+        },
         validate: {
           min: 0,
         },
@@ -54,6 +58,10 @@ module.exports = (sequelize) => {
         type: DataTypes.DECIMAL(12, 2),
         allowNull: true,
         field: 'compare_at_price',
+        get() {
+          const raw = this.getDataValue('compareAtPrice');
+          return raw === null || raw === undefined ? null : Number(raw);
+        },
       },
       stock: {
         type: DataTypes.INTEGER,

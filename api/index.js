@@ -1,5 +1,5 @@
 const app = require('../app');
-const connectToDatabase = require('../util/db');
+const { sequelize } = require('../db');
 
 module.exports = async (req, res) => {
   // Handle Vercel internal rewrite path mapping
@@ -12,7 +12,7 @@ module.exports = async (req, res) => {
   }
 
   try {
-    await connectToDatabase();
+    await sequelize.authenticate();
   } catch (err) {
     console.error('[Vercel Serverless Function DB Error]:', err);
     return res.status(500).json({

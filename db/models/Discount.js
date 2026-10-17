@@ -3,6 +3,10 @@
 const { Model, DataTypes } = require('sequelize');
 
 class Discount extends Model {
+  static findById(id, options) {
+    return this.findByPk(id, options);
+  }
+
   toJSON() {
     const values = { ...this.get() };
     values._id = values.id;
@@ -44,6 +48,10 @@ module.exports = (sequelize) => {
         type: DataTypes.DECIMAL(12, 2),
         allowNull: false,
         field: 'discount_value',
+        get() {
+          const raw = this.getDataValue('discountValue');
+          return raw === null || raw === undefined ? 0 : Number(raw);
+        },
         validate: {
           min: 0,
         },
@@ -53,11 +61,19 @@ module.exports = (sequelize) => {
         allowNull: false,
         defaultValue: 0,
         field: 'min_order_amount',
+        get() {
+          const raw = this.getDataValue('minOrderAmount');
+          return raw === null || raw === undefined ? 0 : Number(raw);
+        },
       },
       maxDiscount: {
         type: DataTypes.DECIMAL(12, 2),
         allowNull: true,
         field: 'max_discount',
+        get() {
+          const raw = this.getDataValue('maxDiscount');
+          return raw === null || raw === undefined ? null : Number(raw);
+        },
       },
       startDate: {
         type: DataTypes.DATE,

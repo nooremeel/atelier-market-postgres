@@ -1,33 +1,32 @@
 /**
  * @file server.js
- * @description Local development and standalone server entry point.
- *              Connects to the database via cached singleton, optionally provisions
- *              demo data when DEMO_MODE=true, mounts app.js, and begins listening.
+ * @description Local development and standalone server entry point for PostgreSQL edition.
+ * Connects to PostgreSQL via Sequelize, conditionally seeds demo data,
+ * mounts app.js, and begins listening.
  */
 
 require('dotenv').config();
-const mongoose = require('mongoose');
 const app = require('./app');
-const connectToDatabase = require('./util/db');
-const { seedDemoData } = require('./scripts/seedDemoData');
+const { sequelize } = require('./db');
+const seed = require('./scripts/seed');
 
 const PORT = process.env.PORT || 3001;
 
 async function bootstrap() {
-  console.log('[DB] Connecting to MongoDB Atlas...');
-  await connectToDatabase();
-  console.log('[DB] MongoDB connected successfully.');
+  console.log('[DB] Connecting to PostgreSQL...');
+  await sequelize.authenticate();
+  console.log('[DB] PostgreSQL connected successfully.');
 
   if (process.env.DEMO_MODE === 'true') {
-    console.log('[Demo] DEMO_MODE enabled — bootstrapping and resetting demo seed data...');
-    await seedDemoData();
+    console.log('[Demo] DEMO_MODE enabled — bootstrapping seed data...');
+    await seed();
   } else {
-    console.log('[Server] DEMO_MODE is not enabled — skipping demo seeds and account reset.');
+    console.log('[Server] DEMO_MODE is not enabled — skipping demo seeds.');
   }
 
   const server = app.listen(PORT, () => {
     console.log(`\n========================================================`);
-    console.log(` ✨  ATELIER MARKET  —  Multi-Seller Craft Marketplace`);
+    console.log(` ✨  ATELIER MARKET  —  PostgreSQL Edition`);
     console.log(`========================================================`);
     console.log(` 🌐  http://localhost:${PORT}`);
     if (process.env.DEMO_MODE === 'true') {
@@ -40,7 +39,6 @@ async function bootstrap() {
       console.log(`     sara@example.com  · james@example.com  · aisha@example.com`);
       console.log(`\n 👑  Platform Admin (password: Demo1234!):`);
       console.log(`     admin@ateliermarket.com  — Admin Director`);
-      console.log(`\n 🔑  Legacy Demo:  demo@atelier.com / Atelier123!`);
     }
     console.log(`========================================================\n`);
   });
@@ -48,7 +46,7 @@ async function bootstrap() {
   const shutdown = async () => {
     console.log('\nGracefully shutting down...');
     server.close();
-    await mongoose.disconnect();
+    await sequelize.close();
     process.exit(0);
   };
 

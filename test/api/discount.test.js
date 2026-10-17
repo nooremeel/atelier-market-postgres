@@ -1,10 +1,7 @@
 const request = require('supertest');
 const path = require('path');
 const app = require('../../app');
-const User = require('../../models/user');
-const Product = require('../../models/product');
-const Discount = require('../../models/discount');
-const Order = require('../../models/order');
+const { User, Product, Discount, Order, SellerProfile } = require('../../db/models');
 const bcrypt = require('bcryptjs');
 
 async function authAgent(email = 'seller@shop.com', role = 'seller') {
@@ -15,8 +12,13 @@ async function authAgent(email = 'seller@shop.com', role = 'seller') {
     password: await bcrypt.hash(password, 4),
     role,
     name: 'Artisan User',
-    cart: { items: [] },
   });
+  if (role === 'seller') {
+    await SellerProfile.findOrCreate({
+      where: { userId: user.id },
+      defaults: { userId: user.id, shopName: 'Artisan Workshop' },
+    });
+  }
   const csrf = (await agent.get('/api/csrf-token')).body.csrfToken;
   await agent.post('/api/auth/login').set('csrf-token', csrf).send({ email, password });
   return { agent, csrf, user };
@@ -32,7 +34,7 @@ describe('Discounts & Promo Codes API', () => {
         price: 100,
         description: 'Handmade terracotta vase.',
         imageUrl: '/images/vase.jpg',
-        userId: user._id,
+        sellerId: user._id,
       });
 
       // 1. Apply 20% discount
@@ -89,7 +91,7 @@ describe('Discounts & Promo Codes API', () => {
         price: 80,
         description: 'Blown glassware.',
         imageUrl: '/images/glass.jpg',
-        userId: seller1._id,
+        sellerId: seller1._id,
       });
 
       const res = await otherSeller
@@ -106,7 +108,7 @@ describe('Discounts & Promo Codes API', () => {
       const { agent, csrf, user } = await authAgent('customer1@shop.com', 'customer');
 
       // Create sample promo codes
-      await Discount.create([
+      await Discount.bulkCreate([
         {
           code: 'WELCOME10',
           discountType: 'percentage',
@@ -187,7 +189,7 @@ describe('Discounts & Promo Codes API', () => {
         price: 150,
         description: 'Full-grain leather.',
         imageUrl: '/images/journal.jpg',
-        userId: seller._id,
+        sellerId: seller._id,
       });
 
       const discount = await Discount.create({

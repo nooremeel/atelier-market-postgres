@@ -1,6 +1,6 @@
 const request = require('supertest');
 const app = require('../../app');
-const User = require('../../models/user');
+const { User } = require('../../db/models');
 const bcrypt = require('bcryptjs');
 const fs = require('fs');
 const path = require('path');
@@ -15,8 +15,6 @@ async function loginUser(email = 'uploader@atelier.sa', role = 'customer') {
     password: await bcrypt.hash(password, 4),
     role,
     name: 'Image Uploader',
-    cart: { items: [] },
-    addresses: [],
   });
   const csrf = (await agent.get('/api/csrf-token')).body.csrfToken;
   await agent.post('/api/auth/login').set('csrf-token', csrf).send({ email, password });
@@ -99,7 +97,7 @@ describe('Image Upload API', () => {
 
     createdFiles.push(res.body.user.avatar);
 
-    const updatedUser = await User.findById(user._id);
+    const updatedUser = await User.findByPk(user.id || user._id);
     expect(updatedUser.avatar).toMatch(/^\/images\/.*my-avatar\.png$/);
   });
 });

@@ -79,6 +79,10 @@ module.exports = (sequelize) => {
       price: {
         type: DataTypes.DECIMAL(12, 2),
         allowNull: false,
+        get() {
+          const raw = this.getDataValue('price');
+          return raw === null || raw === undefined ? null : Number(raw);
+        },
         validate: {
           min: 0,
         },
@@ -87,6 +91,10 @@ module.exports = (sequelize) => {
         type: DataTypes.DECIMAL(12, 2),
         allowNull: true,
         field: 'compare_at_price',
+        get() {
+          const raw = this.getDataValue('compareAtPrice');
+          return raw === null || raw === undefined ? null : Number(raw);
+        },
       },
       discountType: {
         type: DataTypes.ENUM('percentage', 'fixed'),
@@ -99,6 +107,10 @@ module.exports = (sequelize) => {
         allowNull: false,
         defaultValue: 0,
         field: 'discount_value',
+        get() {
+          const raw = this.getDataValue('discountValue');
+          return raw === null || raw === undefined ? 0 : Number(raw);
+        },
       },
       discountActive: {
         type: DataTypes.BOOLEAN,
@@ -155,6 +167,10 @@ module.exports = (sequelize) => {
         allowNull: false,
         defaultValue: 0,
         field: 'rating_average',
+        get() {
+          const raw = this.getDataValue('ratingAverage');
+          return raw === null || raw === undefined ? 0 : Number(raw);
+        },
         validate: {
           min: 0,
           max: 5,

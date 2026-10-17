@@ -1,7 +1,7 @@
 {
-  "name": "node-js-shop",
+  "name": "atelier-market-postgres",
   "version": "1.0.0",
-  "description": "",
+  "description": "Atelier Market - PostgreSQL & Docker Edition",
   "license": "ISC",
   "author": "",
   "type": "commonjs",
@@ -12,7 +12,6 @@
   "scripts": {
     "test": "vitest run",
     "start": "node server.js",
-    "start:atlas": "node app.js",
     "dev": "nodemon server.js",
     "postinstall": "npm --prefix client install --include=dev",
     "client:dev": "npm --prefix client run dev",
@@ -21,11 +20,9 @@
     "db:migrate": "sequelize-cli db:migrate",
     "db:migrate:undo": "sequelize-cli db:migrate:undo",
     "db:migrate:undo:all": "sequelize-cli db:migrate:undo:all",
-    "db:seed": "node scripts/seed.js",
-    "db:seed-orders": "node scripts/cleanSaraOrders.js"
+    "db:seed": "node scripts/seed.js"
   },
   "devDependencies": {
-    "mongodb-memory-server": "^11.2.0",
     "nodemon": "^3.1.14",
     "supertest": "^7.2.2",
     "vitest": "^5.0.0"
@@ -35,7 +32,6 @@
     "body-parser": "^2.2.2",
     "compression": "^1.8.1",
     "connect-flash": "^0.1.1",
-    "connect-mongodb-session": "^5.0.0",
     "connect-pg-simple": "^10.0.0",
     "cross-env": "^10.1.0",
     "csurf": "^1.11.0",
@@ -45,8 +41,6 @@
     "express-session": "^1.19.0",
     "express-validator": "^7.3.2",
     "helmet": "^8.2.0",
-    "mongodb": "^6.21.0",
-    "mongoose": "^8.24.0",
     "morgan": "^1.11.0",
     "multer": "^2.1.1",
     "nodemailer": "^8.0.10",

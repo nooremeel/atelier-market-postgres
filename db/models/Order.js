@@ -3,6 +3,10 @@
 const { Model, DataTypes } = require('sequelize');
 
 class Order extends Model {
+  static findById(id, options) {
+    return this.findByPk(id, options);
+  }
+
   toJSON() {
     const values = { ...this.get() };
     values._id = values.id;
@@ -87,12 +91,20 @@ module.exports = (sequelize) => {
         type: DataTypes.DECIMAL(12, 2),
         allowNull: false,
         defaultValue: 0,
+        get() {
+          const raw = this.getDataValue('subtotal');
+          return raw === null || raw === undefined ? 0 : Number(raw);
+        },
       },
       shippingFee: {
         type: DataTypes.DECIMAL(12, 2),
         allowNull: false,
         defaultValue: 0,
         field: 'shipping_fee',
+        get() {
+          const raw = this.getDataValue('shippingFee');
+          return raw === null || raw === undefined ? 0 : Number(raw);
+        },
       },
       discountCode: {
         type: DataTypes.TEXT,
@@ -111,17 +123,29 @@ module.exports = (sequelize) => {
         allowNull: false,
         defaultValue: 0,
         field: 'discount_value',
+        get() {
+          const raw = this.getDataValue('discountValue');
+          return raw === null || raw === undefined ? 0 : Number(raw);
+        },
       },
       discountAmount: {
         type: DataTypes.DECIMAL(12, 2),
         allowNull: false,
         defaultValue: 0,
         field: 'discount_amount',
+        get() {
+          const raw = this.getDataValue('discountAmount');
+          return raw === null || raw === undefined ? 0 : Number(raw);
+        },
       },
       totalPrice: {
         type: DataTypes.DECIMAL(12, 2),
         allowNull: false,
         field: 'total_price',
+        get() {
+          const raw = this.getDataValue('totalPrice');
+          return raw === null || raw === undefined ? 0 : Number(raw);
+        },
         validate: {
           min: 0,
         },
