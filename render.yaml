@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: atelier-market-api
+    runtime: docker
+    plan: free
+    region: frankfurt
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: DEMO_MODE
+        value: true
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_URL_UNPOOLED
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: PAYMOB_API_KEY
+        sync: false
+      - key: PAYMOB_HMAC_SECRET
+        sync: false
+      - key: PAYMOB_INTEGRATION_ID
+        sync: false
+      - key: PAYMOB_IFRAME_ID
+        sync: false
