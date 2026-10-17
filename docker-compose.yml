@@ -22,5 +22,16 @@ services:
     ports: ["5433:5432"]
     tmpfs: [/var/lib/postgresql/data]
 
+  api:
+    build: .
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgres://atelier:atelier@db:5432/atelier
+      SESSION_SECRET: change-me-locally
+      NODE_ENV: development
+      DEMO_MODE: "true"
+    ports: ["3001:3001"]
+
 volumes:
   pgdata:

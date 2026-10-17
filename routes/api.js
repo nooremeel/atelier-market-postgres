@@ -20,5 +20,6 @@ router.use('/', adminRoutes.routes);
 router.use('/', discountRoutes);
 // Extended marketplace routes (search suggestions, favourites, reviews, account, sellers)
 router.use('/', extendedRoutes);
+router.get('/health', meta.getHealth);
 
 module.exports = router;

@@ -1,0 +1,11 @@
+node_modules
+client
+test
+.git
+.env
+*.md
+data
+coverage
+.vscode
+.agents
+npm-debug.log
