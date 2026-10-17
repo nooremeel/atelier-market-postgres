@@ -1,4 +1,4 @@
-name: CI Pipeline
+name: CI
 
 on:
   push:
@@ -12,58 +12,83 @@ concurrency:
 
 jobs:
   backend:
-    name: Backend (Node ${{ matrix.node-version }})
+    name: Backend (Node 22 + PostgreSQL 16)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: [20.x, 22.x]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: atelier_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d atelier_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CI: true
+      NODE_ENV: test
+      DATABASE_URL_TEST: postgres://test:test@localhost:5432/atelier_test
+      SESSION_SECRET: ci-test-secret-key-32b
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js ${{ matrix.node-version }}
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
+          node-version: 22.x
+          cache: npm
 
       - name: Install root dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
+
+      - name: Run PostgreSQL migrations
+        run: npx sequelize-cli db:migrate --env test
 
       - name: Run backend tests
         run: npm test
 
   frontend:
-    name: Frontend (Node ${{ matrix.node-version }})
+    name: Frontend (Node 22 + React 18)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: [20.x, 22.x]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js ${{ matrix.node-version }}
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
+          node-version: 22.x
+          cache: npm
           cache-dependency-path: client/package-lock.json
 
       - name: Install client dependencies
-        working-directory: ./client
+        working-directory: client
         run: npm ci
 
-      - name: Type check client
-        working-directory: ./client
+      - name: Type check TypeScript
+        working-directory: client
         run: npx tsc -b
 
       - name: Run client tests
-        working-directory: ./client
+        working-directory: client
         run: npm test
 
       - name: Build production bundle
-        working-directory: ./client
+        working-directory: client
         run: npm run build
+
+  docker:
+    name: Docker Build Validation
+    runs-on: ubuntu-latest
+    needs: [backend]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t atelier-market-api .

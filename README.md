@@ -1,8 +1,8 @@
 # Atelier Market — PostgreSQL Edition
 > PostgreSQL edition of [Atelier Market (MongoDB edition)](https://github.com/nooremeel/Atelier-Market).
 
-[![Vitest: 100% Passing](https://img.shields.io/badge/Vitest-100%25%20Passing%20(282%20tests)-10b981?style=for-the-badge&logo=vitest&logoColor=white)](https://github.com/nooremeel/atelier-market-postgres/tree/main/test)
-[![CI: GitHub Actions](https://img.shields.io/badge/CI-GitHub%20Actions%20Matrix-2088FF?style=for-the-badge&logo=githubactions&logoColor=white)](https://github.com/nooremeel/atelier-market-postgres/blob/main/.github/workflows/ci.yml)
+[![Vitest: 100% Passing](https://img.shields.io/badge/Vitest-100%25%20Passing%20(288%20tests)-10b981?style=for-the-badge&logo=vitest&logoColor=white)](https://github.com/nooremeel/atelier-market-postgres/tree/main/test)
+[![CI](https://github.com/nooremeel/atelier-market-postgres/actions/workflows/ci.yml/badge.svg)](https://github.com/nooremeel/atelier-market-postgres/actions/workflows/ci.yml)
 [![TypeScript: Strict](https://img.shields.io/badge/TypeScript-Strict%20Mode-3178c6?style=for-the-badge&logo=typescript&logoColor=white)](https://github.com/nooremeel/atelier-market-postgres/tree/main/client)
 [![Payment: Paymob](https://img.shields.io/badge/Payment-Paymob%20Gateway%203DS-0066FF?style=for-the-badge&logo=shield&logoColor=white)](https://github.com/nooremeel/atelier-market-postgres/blob/main/services/paymobService.js)
 [![Architecture: Express 5 + React 18](https://img.shields.io/badge/Architecture-Express%205%20%2B%20React%2018%20SPA-d4af37?style=for-the-badge&logo=react&logoColor=white)](https://github.com/nooremeel/atelier-market-postgres)
