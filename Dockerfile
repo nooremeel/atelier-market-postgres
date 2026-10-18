@@ -1,3 +1,10 @@
+FROM node:22-alpine AS client-builder
+WORKDIR /app
+COPY client/package*.json ./client/
+RUN npm --prefix client ci
+COPY client/ ./client/
+RUN npm --prefix client run build
+
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
@@ -11,6 +18,7 @@ WORKDIR /app
 RUN mkdir -p /app/images && chown -R node:node /app
 
 COPY --from=deps --chown=node:node /app/node_modules ./node_modules
+COPY --from=client-builder --chown=node:node /app/public/app ./public/app
 COPY --chown=node:node . .
 
 USER node

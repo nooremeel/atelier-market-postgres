@@ -26,3 +26,10 @@ This file tracks production bug fixes, test discrepancies, architectural enhance
 - **Fix**: Ported `controllers/discountController.js` to Sequelize with `Discount.findOne({ where: { code } })`, `findAll`, `create`, `save`, `destroy`.
 - **Files**: `controllers/discountController.js`
 - **Tags**: mongoose, sequelize, discounts
+
+### [2026-10-18] Bug: Cloud PostgreSQL URL Resolution, Session SSL, and Vercel Route Mangling
+- **Symptom**: `FUNCTION_INVOCATION_FAILED` (HTTP 500) on all API endpoints when deploying to Vercel, resulting in missing catalog pieces, broken login, and broken registration.
+- **Root cause**: `db/config.js` only checked `DATABASE_URL_UNPOOLED || DATABASE_URL` without fallbacks, throwing a synchronous `TypeError: The "url" argument must be of type string. Received undefined` when environment variable names drifted (such as `POSTGRES_URL` created by Neon Vercel integration). Additionally, `app.js`'s session store (`connect-pg-simple`) only looked at `DATABASE_URL` without SSL options, and `api/index.js` overwrote `req.url` with `/api/index.js` when reading `x-matched-path`.
+- **Fix**: Expanded URL resolution in `db/config.js` and `app.js` to support all standard Neon/Vercel keys (`DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `POSTGRES_URL`, `POSTGRES_URL_NON_POOLING`) with safe fallback strings; added `{ ssl: { rejectUnauthorized: false } }` to `pgSession`; updated `api/index.js` to preserve requested sub-paths; added `api/[...slug].js` catch-all route forwarder; enabled multi-stage React SPA build in `Dockerfile`; and set `poolOptions.forks` in `vitest.config.mjs` for strict sequential execution.
+- **Files**: `db/config.js`, `app.js`, `api/index.js`, `api/[...slug].js`, `Dockerfile`, `.dockerignore`, `vitest.config.mjs`
+- **Tags**: vercel, neon, postgresql, sequelize, session, deployment, vitest

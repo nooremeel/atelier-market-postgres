@@ -1,5 +1,5 @@
 node_modules
-client
+client/node_modules
 test
 .git
 .env

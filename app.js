@@ -49,13 +49,27 @@ app.use(async (req, res, next) => {
 // Express-session falls back to MemoryStore during tests
 let store;
 if (!isTest) {
+    const sessionDbUrl =
+        process.env.DATABASE_URL_UNPOOLED ||
+        process.env.DATABASE_URL ||
+        process.env.POSTGRES_URL_NON_POOLING ||
+        process.env.POSTGRES_URL ||
+        'postgres://atelier:atelier@localhost:5432/atelier';
+    const isCloudDb =
+        sessionDbUrl.includes('neon.tech') ||
+        sessionDbUrl.includes('aws.') ||
+        process.env.NODE_ENV === 'production';
+
     store = new pgSession({
-        conString: process.env.DATABASE_URL || 'postgres://atelier:atelier@localhost:5432/atelier',
+        conObject: {
+            connectionString: sessionDbUrl,
+            ssl: isCloudDb ? { rejectUnauthorized: false } : undefined,
+        },
         tableName: 'session',
         createTableIfMissing: false,
     });
     store.on('error', (err) => {
-        console.error('[Session Store Error]:', err);
+        console.error('[Session Store Error]:', err.message);
     });
 }
 const csrfProtection = csrf();

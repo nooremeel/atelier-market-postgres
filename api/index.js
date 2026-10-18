@@ -2,11 +2,17 @@ const app = require('../app');
 const { sequelize } = require('../db');
 
 module.exports = async (req, res) => {
-  // Handle Vercel internal rewrite path mapping
-  if (req.headers['x-matched-path']) {
-    req.url = req.headers['x-matched-path'];
+  // Normalize incoming URL for Express router
+  const matchedPath = req.headers['x-matched-path'];
+  if (matchedPath && !matchedPath.endsWith('/index.js') && !matchedPath.endsWith('/index') && matchedPath !== '/api') {
+    req.url = matchedPath;
   } else if (req.url.startsWith('/api/index.js')) {
-    req.url = req.url.replace(/^\/api\/index\.js/, '/api') || '/api';
+    const forwardedUrl = req.headers['x-forwarded-url'] || req.headers['x-vercel-matched-path'];
+    if (forwardedUrl && (forwardedUrl.startsWith('/api') || forwardedUrl.startsWith('/images'))) {
+      req.url = forwardedUrl;
+    } else {
+      req.url = req.url.replace(/^\/api\/index\.js/, '/api') || '/api';
+    }
   } else if (!req.url.startsWith('/api') && !req.url.startsWith('/images')) {
     req.url = '/api' + (req.url.startsWith('/') ? req.url : '/' + req.url);
   }
